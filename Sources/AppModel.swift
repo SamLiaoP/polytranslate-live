@@ -186,7 +186,9 @@ final class AppModel: ObservableObject {
         dlog("audio sources started: \(captures.map(\.rawValue)), languages: \(languages.map(\.speechLocale)), target: \(target.speechLocale)")
 
         do {
-            try await engine.start(languages: languages, captures: captures, hub: hub)
+            let settings = self.settings
+            try await engine.start(languages: languages, captures: captures, hub: hub,
+                                   tuning: { settings.data.arbiter })
         } catch {
             dlog("engine start failed: \(error.localizedDescription)")
             globalError = error.localizedDescription

@@ -30,14 +30,15 @@ final class RecognitionEngine {
     private var arbiters: [CaptureKind: Arbiter] = [:]
     private var languages: [Language] = []
 
-    func start(languages: [Language], captures: [CaptureKind], hub: AudioHub) async throws {
+    func start(languages: [Language], captures: [CaptureKind], hub: AudioHub,
+               tuning: @escaping () -> ArbiterTuning = { .standard }) async throws {
         guard !isRunning else { return }
         self.languages = languages
         var started: [LaneKey: SpeechChannel] = [:]
         var failures: [String] = []
 
         for capture in captures {
-            let arbiter = Arbiter(languages: languages)
+            let arbiter = Arbiter(languages: languages, tuning: tuning)
             arbiter.onEmit = { [weak self] slot, text in
                 guard let self else { return }
                 onFinal?(slot, capture, text)
@@ -141,24 +142,25 @@ final class Arbiter {
     var onEmit: ((_ slot: Int, _ text: String) -> Void)?
 
     private let languages: [Language]
+    /// 每次用到時讀最新設定，所以在設定裡調整會立即生效。
+    private let tuning: () -> ArbiterTuning
     private var groups: [Group] = []
     private var emitted: [CMTimeRange] = []
     private var preferred: Int?
     private var preferredAt = Date.distantPast
 
-    // 參數來自 audicap 的實測。
+    // 固定參數（來自 audicap 的實測）；可調的門檻在 ArbiterTuning。
     private let waitSec = 1.0            // 等其他語言補齊的時間
     private let lowConfWaitSec = 3.5     // 最佳候選也沒把握時多等（各語言定稿時間差可到 4 秒）
     private let lowConfLine = 0.80
-    private let junkConf = 0.25          // 低於此直接丟（錯誤的那路常吐出「, , , ,」這種 0.01）
-    private let fastPassConf = 0.90      // 當前語言 + 很有把握 → 不等，直接放行
-    private let biasBonus = 0.08         // 偏向上一句的語言，但要小於正確路的領先幅度
     private let biasHoldSec = 12.0       // 停頓太久就不再偏向
     private let scriptMismatchPenalty = 0.25
     private let scriptCheckMinChars = 4
+    private let loneShortSec = 2.5
 
-    init(languages: [Language]) {
+    init(languages: [Language], tuning: @escaping () -> ArbiterTuning = { .standard }) {
         self.languages = languages
+        self.tuning = tuning
     }
 
     /// 草稿要不要顯示：
@@ -181,7 +183,7 @@ final class Arbiter {
     func receive(_ raw: Candidate) {
         var c = raw
         guard !c.text.isEmpty else { return }
-        if c.confidence >= 0 && c.confidence < junkConf {
+        if c.confidence >= 0 && c.confidence < tuning().junkConfidence {
             dlog("arbiter drop junk \(languages[c.slot].speechLocale) conf=\(String(format: "%.2f", c.confidence)): \(c.text.prefix(40))")
             return
         }
@@ -230,7 +232,7 @@ final class Arbiter {
         }
 
         // 直通：目前語言、信心值很高，不等別人。
-        if let p = preferred, c.slot == p, c.confidence >= fastPassConf,
+        if let p = preferred, c.slot == p, c.confidence >= tuning().fastPassConfidence,
            Date().timeIntervalSince(preferredAt) < biasHoldSec {
             emit(c)
             return
@@ -257,10 +259,11 @@ final class Arbiter {
         guard let best = g.candidates.max(by: { score($0) < score($1) }) else { return }
         // 只有一個候選、信心值低、又很短：多半是別的語言的碎片被誤收（例如中文通道聽日文吐出「註話」）。
         // 放行會把這段音訊標成「已處理」，害正確語言晚到的定稿被剪掉，所以直接丟。
-        // 實測：正確語言的定稿信心值最低看過 0.65；錯誤語言的垃圾在 0.18–0.55 之間。
-        if g.candidates.count == 1, best.confidence >= 0, best.confidence < 0.6 {
+        // 實測：正確語言的定稿信心值最低看過 0.65；錯誤語言的垃圾在 0.18–0.55 之間。門檻可在設定調整。
+        let t = tuning()
+        if g.candidates.count == 1, best.confidence >= 0, best.confidence < t.loneStrictBelow {
             let mismatch = best.text.count >= scriptCheckMinChars && !ScriptDetector.scriptMatches(best.text, languages[best.slot])
-            if best.confidence < 0.45 || mismatch || best.range.duration.seconds < 2.5 {
+            if best.confidence < t.loneDropBelow || mismatch || best.range.duration.seconds < loneShortSec {
                 dlog("arbiter drop lone-low \(languages[best.slot].speechLocale) conf=\(String(format: "%.2f", best.confidence)) mismatch=\(mismatch): \(best.text.prefix(40))")
                 return
             }
@@ -277,7 +280,7 @@ final class Arbiter {
         let mismatch = c.text.count >= scriptCheckMinChars && !ScriptDetector.scriptMatches(c.text, languages[c.slot])
         if mismatch { return conf - scriptMismatchPenalty }
         let biased = preferred == c.slot && Date().timeIntervalSince(preferredAt) < biasHoldSec
-        return conf + (biased ? biasBonus : 0)
+        return conf + (biased ? tuning().preferredBonus : 0)
     }
 
     private func emit(_ c: Candidate) {

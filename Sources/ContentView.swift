@@ -822,6 +822,27 @@ private struct SettingsSheet: View {
                 Section(tr("settings.transcript")) {
                     Toggle(trf("settings.saveTranscript", tr("transcript.folder")), isOn: $settings.data.saveTranscript)
                 }
+                Section(tr("settings.arbiter")) {
+                    Text(tr("settings.arbiter.note"))
+                        .font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    ThresholdRow(title: tr("settings.arb.junk"), help: tr("settings.arb.junk.help"),
+                                 value: $settings.data.arbiter.junkConfidence, range: 0...0.6)
+                    ThresholdRow(title: tr("settings.arb.loneDrop"), help: tr("settings.arb.loneDrop.help"),
+                                 value: $settings.data.arbiter.loneDropBelow, range: 0...0.9)
+                    ThresholdRow(title: tr("settings.arb.loneStrict"), help: tr("settings.arb.loneStrict.help"),
+                                 value: $settings.data.arbiter.loneStrictBelow, range: 0...0.95)
+                    ThresholdRow(title: tr("settings.arb.fastPass"), help: tr("settings.arb.fastPass.help"),
+                                 value: $settings.data.arbiter.fastPassConfidence, range: 0.5...1)
+                    ThresholdRow(title: tr("settings.arb.bonus"), help: tr("settings.arb.bonus.help"),
+                                 value: $settings.data.arbiter.preferredBonus, range: 0...0.3)
+                    HStack {
+                        Spacer()
+                        Button(tr("settings.arb.reset")) { settings.data.arbiter = .standard }
+                            .controlSize(.small)
+                            .disabled(settings.data.arbiter == .standard)
+                    }
+                }
             }
             .formStyle(.grouped)
             .scrollContentBackground(.hidden)
@@ -835,7 +856,28 @@ private struct SettingsSheet: View {
             .padding(.top, 8)
         }
         .padding(20)
-        .frame(width: 560, height: 600)
+        .frame(width: 600, height: 720)
         .background(Palette.window)
+    }
+}
+
+/// 設定頁裡一條門檻滑桿：標題、說明、滑桿、數值。
+private struct ThresholdRow: View {
+    let title: String
+    let help: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title)
+                Spacer()
+                Slider(value: $value, in: range, step: 0.01).frame(width: 200)
+                Text(String(format: "%.2f", value)).monospacedDigit().frame(width: 40, alignment: .trailing)
+            }
+            Text(help).font(.caption).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 2)
     }
 }

@@ -140,7 +140,36 @@ enum TranslationBackendKind: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-/// 全域設定，存在 UserDefaults。
+/// 語言仲裁的門檻。實測（TTS 素材）：正確語言的定稿信心值 ≥ 0.65，錯誤語言 0.18–0.55。
+/// 真人語音、口音、背景噪音會讓數字整體往下掉，所以開放在設定裡調整。
+struct ArbiterTuning: Codable, Equatable {
+    /// 低於此值的候選一律丟棄（錯誤語言常吐出 0.01 的「, , , ,」）。
+    var junkConfidence: Double = 0.25
+    /// 只有一種語言交出結果時，低於此值直接丟。
+    var loneDropBelow: Double = 0.45
+    /// 只有一種語言交出結果、信心值低於此值時，還要通過文字系統與長度檢查才放行。
+    var loneStrictBelow: Double = 0.60
+    /// 目前語言的信心值高於此值就不等其他語言，直接放行（省掉 1 秒等待）。
+    var fastPassConfidence: Double = 0.90
+    /// 比較時偏向上一句語言的加分。要小於正確語言通常領先的幅度（實測最小 0.16）。
+    var preferredBonus: Double = 0.08
+
+    static let standard = ArbiterTuning()
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = ArbiterTuning.standard
+        junkConfidence = try c.decodeIfPresent(Double.self, forKey: .junkConfidence) ?? d.junkConfidence
+        loneDropBelow = try c.decodeIfPresent(Double.self, forKey: .loneDropBelow) ?? d.loneDropBelow
+        loneStrictBelow = try c.decodeIfPresent(Double.self, forKey: .loneStrictBelow) ?? d.loneStrictBelow
+        fastPassConfidence = try c.decodeIfPresent(Double.self, forKey: .fastPassConfidence) ?? d.fastPassConfidence
+        preferredBonus = try c.decodeIfPresent(Double.self, forKey: .preferredBonus) ?? d.preferredBonus
+    }
+}
+
+/// 全域設定，存在 UserDefaults。缺少的欄位用預設值，加新設定不會讓舊設定整個重置。
 struct AppSettingsData: Codable, Equatable {
     /// 介面語言，預設英文。
     var uiLanguage: UILanguage = .en
@@ -155,6 +184,25 @@ struct AppSettingsData: Codable, Equatable {
     var translateDrafts = true
     var saveTranscript = true
     var sidebarVisible = false
+    var arbiter = ArbiterTuning()
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = AppSettingsData()
+        uiLanguage = try c.decodeIfPresent(UILanguage.self, forKey: .uiLanguage) ?? d.uiLanguage
+        targetLanguage = try c.decodeIfPresent(String.self, forKey: .targetLanguage) ?? d.targetLanguage
+        paneLanguages = try c.decodeIfPresent([String].self, forKey: .paneLanguages) ?? d.paneLanguages
+        source = try c.decodeIfPresent(AudioSourceKind.self, forKey: .source) ?? d.source
+        backend = try c.decodeIfPresent(TranslationBackendKind.self, forKey: .backend) ?? d.backend
+        llm = try c.decodeIfPresent(LLMConfig.self, forKey: .llm) ?? d.llm
+        fontSize = try c.decodeIfPresent(Double.self, forKey: .fontSize) ?? d.fontSize
+        translateDrafts = try c.decodeIfPresent(Bool.self, forKey: .translateDrafts) ?? d.translateDrafts
+        saveTranscript = try c.decodeIfPresent(Bool.self, forKey: .saveTranscript) ?? d.saveTranscript
+        sidebarVisible = try c.decodeIfPresent(Bool.self, forKey: .sidebarVisible) ?? d.sidebarVisible
+        arbiter = try c.decodeIfPresent(ArbiterTuning.self, forKey: .arbiter) ?? d.arbiter
+    }
 }
 
 @MainActor

@@ -124,7 +124,7 @@ AGENTS.md / CLAUDE.md     instructions for AI coding assistants
 
 ### Known limitations
 
-- Language routing uses the confidence of *finalized* sentences (measured: correct language ≥ 0.65, wrong language 0.18–0.55). Drafts carry no confidence, so a wrong pane may briefly show a gray draft (e.g. romanized Japanese in the English pane) until the sentence finalizes.
+- Language routing uses the confidence of *finalized* sentences (measured on clean speech: correct language ≥ 0.65, wrong language 0.18–0.55). Accents and noise lower these numbers; if correct sentences go missing, lower the thresholds under **Settings › Language detection (advanced)** — changes apply immediately and every decision is logged. Drafts carry no confidence, so a wrong pane may briefly show a gray draft (e.g. romanized Japanese in the English pane) until the sentence finalizes.
 - A sentence is finalized only when the speaker pauses.
 - Occasionally the first syllable after a language switch is glued to the previous sentence by the recognizer (e.g. Japanese 「皆さん」→「なさん」).
 - Up to 4 panes. macOS only.
@@ -217,7 +217,7 @@ say -v Samantha -o /tmp/en.wav --data-format=LEI16@16000 "Good morning everyone.
 
 ### 已知限制
 
-- 語言分流靠「定稿句子」的信心值（實測正確語言 ≥ 0.65、錯誤語言 0.18–0.55）。草稿沒有信心值，偶爾會在錯的欄位閃一下灰字（例如英文欄短暫出現日文的羅馬拼音），定稿時會消失。
+- 語言分流靠「定稿句子」的信心值（乾淨語音實測正確語言 ≥ 0.65、錯誤語言 0.18–0.55）。口音和噪音會讓數字變低，正確的句子常消失時，到「設定 › 語言判斷（進階）」把門檻調低，調整立即生效，每次判斷都有日誌。草稿沒有信心值，偶爾會在錯的欄位閃一下灰字（例如英文欄短暫出現日文的羅馬拼音），定稿時會消失。
 - 一句話要等講者停頓才會定稿。
 - 語言切換的第一個字偶爾會被辨識器黏到前一句，例如日文「皆さん」變成「なさん」。
 - 最多四欄。只支援 macOS。
