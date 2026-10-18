@@ -1,0 +1,16 @@
+# 編譯產物
+build/
+tools/make_icon
+*.o
+*.swiftmodule
+.build/
+DerivedData/
+
+# macOS
+.DS_Store
+._*
+
+# 編輯器
+.vscode/
+.idea/
+*.swp
