@@ -1,19 +1,33 @@
 #!/bin/zsh
-# PolyTranslate Live：編譯 + 組 .app bundle + ad-hoc 簽名。不需要 Xcode，只要 Command Line Tools（SDK 26+）。
-#   ./build.sh          編譯
-#   ./build.sh run      編譯後啟動
+# PolyTranslate Live：編譯 + 組 .app bundle + ad-hoc 簽名 + 安裝到 ~/Applications。
+# 不需要 Xcode，只要 Command Line Tools（SDK 26+）。
+#
+#   ./build.sh            編譯到 build/PolyTranslateLive.app
+#   ./build.sh install    編譯並安裝到 ~/Applications/PolyTranslate Live.app（Launchpad / Spotlight 找得到）
+#   ./build.sh run        編譯、安裝、啟動
 set -e
 cd "$(dirname "$0")"
 
 APP_NAME="PolyTranslateLive"
+DISPLAY_NAME="PolyTranslate Live"
 BUNDLE_ID="dev.samliao.polytranslatelive"
 OUT="build"
 APP="$OUT/$APP_NAME.app"
-SDK="$(xcrun --show-sdk-path)"
-SDKV="$(xcrun --show-sdk-version | cut -d. -f1)"
+INSTALL_DIR="$HOME/Applications"
+INSTALLED="$INSTALL_DIR/$DISPLAY_NAME.app"
+SDK="$(xcrun --show-sdk-path 2>/dev/null || true)"
 
+if [ -z "$SDK" ]; then
+  echo "✗ 找不到 macOS SDK。請先安裝 Command Line Tools：xcode-select --install"
+  exit 1
+fi
+SDKV="$(xcrun --show-sdk-version | cut -d. -f1)"
 if [ "$SDKV" -lt 26 ]; then
-  echo "✗ macOS SDK $SDKV < 26，SpeechAnalyzer 需要 SDK 26。請更新 Command Line Tools。"
+  echo "✗ macOS SDK $SDKV < 26，SpeechAnalyzer 需要 SDK 26。請更新 Command Line Tools（軟體更新）。"
+  exit 1
+fi
+if [ "$(uname -m)" != "arm64" ]; then
+  echo "✗ 只支援 Apple Silicon。"
   exit 1
 fi
 
@@ -35,8 +49,24 @@ fi
 echo "→ 簽名（ad-hoc）"
 codesign --force --deep -s - --identifier "$BUNDLE_ID" "$APP"
 codesign --verify --strict "$APP"
-
 echo "✓ $APP"
+
+if [ "$1" = "install" ] || [ "$1" = "run" ]; then
+  echo "→ 安裝到 $INSTALLED"
+  mkdir -p "$INSTALL_DIR"
+  # 先關掉正在跑的舊版，否則覆蓋會失敗。
+  pkill -x "$APP_NAME" 2>/dev/null || true
+  rm -rf "$INSTALLED"
+  ditto "$APP" "$INSTALLED"
+  xattr -cr "$INSTALLED" 2>/dev/null || true
+  # 複製後重新簽名，確保安裝位置的簽章完整（TCC 權限綁定這個路徑）。
+  codesign --force --deep -s - --identifier "$BUNDLE_ID" "$INSTALLED"
+  codesign --verify --strict "$INSTALLED"
+  touch "$INSTALLED"
+  echo "✓ 已安裝：$INSTALLED"
+  echo "  Launchpad、Spotlight、Finder › 應用程式 都找得到。第一次啟動請用這個安裝版本，權限才會記在正確的路徑上。"
+fi
+
 if [ "$1" = "run" ]; then
-  open "$APP"
+  open "$INSTALLED"
 fi
