@@ -46,6 +46,15 @@ actor AppleTranslator {
         fallbackPairs.contains("\(source)|\(target)")
     }
 
+    /// 語言包剛裝好：丟掉快取的 session，下一句重新用低延遲模式。
+    /// 不這樣做的話，退回 highFidelity 的 session 會一直用到 App 重開。
+    func invalidate(from source: String, to target: String) {
+        let key = "\(source)|\(target)"
+        sessions.removeValue(forKey: key)
+        fallbackPairs.remove(key)
+        dlog("translator: session \(key) invalidated")
+    }
+
     func translate(_ text: String, from source: String, to target: String) async throws -> String {
         let key = "\(source)|\(target)"
         let src = Locale.Language(identifier: source)
@@ -60,25 +69,31 @@ actor AppleTranslator {
             @unknown default:
                 throw TranslatorError.unsupportedPair(source: source, target: target)
             }
-            sessions[key] = Entry(session: TranslationSession(installedSource: src, target: tgt, preferredStrategy: .lowLatency),
-                                  strategy: .lowLatency)
+            // actor 在 await 期間可重入：另一筆翻譯可能已經建好了，別重複建。
+            if sessions[key] == nil {
+                sessions[key] = Entry(session: TranslationSession(installedSource: src, target: tgt, preferredStrategy: .lowLatency),
+                                      strategy: .lowLatency)
+            }
         }
-        guard var entry = sessions[key] else { throw TranslatorError.unsupportedPair(source: source, target: target) }
+        guard let entry = sessions[key] else { throw TranslatorError.unsupportedPair(source: source, target: target) }
 
         do {
             return try await Self.run(entry.session, text)
         } catch let error as TranslationError where entry.strategy == .lowLatency {
             // 離線低延遲語言包沒裝（系統設定 › 一般 › 語言與地區 › 翻譯語言）。
             // 退回 highFidelity：實測這台機器上 200–400 ms，仍然可用，但會提示使用者去裝語言包。
-            _ = error
-            entry = Entry(session: TranslationSession(installedSource: src, target: tgt, preferredStrategy: .highFidelity),
-                          strategy: .highFidelity)
-            sessions[key] = entry
+            dlog("translator: lowLatency \(key) failed (\(error.localizedDescription)); falling back to highFidelity")
+            let fallback = Entry(session: TranslationSession(installedSource: src, target: tgt, preferredStrategy: .highFidelity),
+                                 strategy: .highFidelity)
+            sessions[key] = fallback
             fallbackPairs.insert(key)
             do {
-                return try await Self.run(entry.session, text)
+                return try await Self.run(fallback.session, text)
             } catch {
                 sessions.removeValue(forKey: key)
+                dlog("translator: highFidelity \(key) failed too: \(error.localizedDescription)")
+                // 語言包真的沒裝才報「請裝語言包」；已經裝了卻失敗（網路、暫時性錯誤）就把原始錯誤丟回去。
+                if await availability.status(from: src, to: tgt) == .installed { throw error }
                 throw TranslatorError.languagePackMissing(source: source, target: target)
             }
         } catch {
@@ -172,6 +187,12 @@ final class TranslatorHub {
     func appleUsingFallback(from speechLocale: String, to target: String) async -> Bool {
         let source = LanguageMap.translationLanguage(forSpeechLocale: speechLocale)
         return await apple.isUsingFallback(from: source, to: target)
+    }
+
+    /// 語言包下載完成後呼叫，讓這一對語言下一句就改用離線低延遲模式。
+    func appleLanguagePackInstalled(from speechLocale: String, to target: String) async {
+        let source = LanguageMap.translationLanguage(forSpeechLocale: speechLocale)
+        await apple.invalidate(from: source, to: target)
     }
 
     func appleStatus(from speechLocale: String, to target: String) async -> LanguageAvailability.Status? {

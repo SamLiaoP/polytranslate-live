@@ -1,3 +1,4 @@
+import Accelerate
 import AVFoundation
 import ScreenCaptureKit
 
@@ -25,8 +26,18 @@ final class Resampler {
     private var rateConverterSrcRate: Double = 0
     private var floatConverter: AVAudioConverter?
     private var floatConverterSrc: AVAudioFormat?
+    // 每個 callback 都 new buffer 很浪費（系統聲音一秒二十幾次），容量夠就重用。
+    private var floatBuf: AVAudioPCMBuffer?
+    private var monoBuf: AVAudioPCMBuffer?
+    private var outBuf: AVAudioPCMBuffer?
 
     private final class Once: @unchecked Sendable { var done = false }
+
+    private func reuse(_ slot: inout AVAudioPCMBuffer?, format: AVAudioFormat, capacity: AVAudioFrameCount) -> AVAudioPCMBuffer? {
+        if let b = slot, b.format == format, b.frameCapacity >= capacity { return b }
+        slot = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity)
+        return slot
+    }
 
     func process(_ buffer: AVAudioPCMBuffer) -> [Float]? {
         let frames = Int(buffer.frameLength)
@@ -34,7 +45,7 @@ final class Resampler {
         let fmt = buffer.format
 
         // 1. 先統一成 Float32 非交錯。
-        var floatBuf = buffer
+        var src = buffer
         if fmt.commonFormat != .pcmFormatFloat32 || fmt.isInterleaved {
             guard let f = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: fmt.sampleRate,
                                         channels: fmt.channelCount, interleaved: false) else { return nil }
@@ -43,27 +54,25 @@ final class Resampler {
                 floatConverterSrc = fmt
             }
             guard let conv = floatConverter,
-                  let out = AVAudioPCMBuffer(pcmFormat: f, frameCapacity: buffer.frameLength) else { return nil }
+                  let out = reuse(&floatBuf, format: f, capacity: buffer.frameLength) else { return nil }
             do { try conv.convert(to: out, from: buffer) } catch { return nil }
-            floatBuf = out
+            src = out
         }
 
         // 2. 混成單聲道（平均各聲道；AVAudioConverter 直接多→單有時會靜音填零，所以自己做）。
-        let ch = Int(floatBuf.format.channelCount)
-        guard let data = floatBuf.floatChannelData,
+        let ch = Int(src.format.channelCount)
+        guard let data = src.floatChannelData,
               let monoFmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: fmt.sampleRate, channels: 1, interleaved: false),
-              let mono = AVAudioPCMBuffer(pcmFormat: monoFmt, frameCapacity: AVAudioFrameCount(frames)) else { return nil }
+              let mono = reuse(&monoBuf, format: monoFmt, capacity: AVAudioFrameCount(frames)) else { return nil }
         mono.frameLength = AVAudioFrameCount(frames)
         let dst = mono.floatChannelData![0]
         if ch == 1 {
             dst.update(from: data[0], count: frames)
         } else {
-            let scale = 1 / Float(ch)
-            for i in 0..<frames {
-                var s: Float = 0
-                for c in 0..<ch { s += data[c][i] }
-                dst[i] = s * scale
-            }
+            dst.update(from: data[0], count: frames)
+            for c in 1..<ch { vDSP_vadd(dst, 1, data[c], 1, dst, 1, vDSP_Length(frames)) }
+            var scale = 1 / Float(ch)
+            vDSP_vsmul(dst, 1, &scale, dst, 1, vDSP_Length(frames))
         }
 
         // 3. 重採樣到 16 kHz。
@@ -76,7 +85,8 @@ final class Resampler {
         }
         guard let conv = rateConverter else { return nil }
         let capacity = AVAudioFrameCount(Double(frames) * 16_000 / fmt.sampleRate) + 32
-        guard let out = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: capacity) else { return nil }
+        guard let out = reuse(&outBuf, format: outFormat, capacity: capacity) else { return nil }
+        out.frameLength = 0
         let once = Once()
         var error: NSError?
         conv.convert(to: out, error: &error) { _, status in
@@ -112,8 +122,9 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         let config = SCStreamConfiguration()
         config.capturesAudio = true
         config.excludesCurrentProcessAudio = true
-        config.sampleRate = 48_000
-        config.channelCount = 2
+        // 直接要辨識器要的格式，Resampler 就只剩複製一份；不用 48 kHz 立體聲再自己降。
+        config.sampleRate = 16_000
+        config.channelCount = 1
         // 只要聲音，影像縮到最小、每秒一張。
         config.width = 2
         config.height = 2
@@ -147,9 +158,12 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
 }
 
 /// 麥克風：AVAudioEngine 預設輸入裝置。
+/// 換裝置（接上 AirPods、拔耳機）時 engine 會停掉並發 configurationChange 通知，要重裝 tap 再啟動，
+/// 不然麥克風就無聲了但介面還顯示聆聽中。
 final class MicrophoneCapture {
     private var engine: AVAudioEngine?
     private let resampler = Resampler()
+    private var observer: NSObjectProtocol?
     var onSamples: (([Float]) -> Void)?
 
     static func requestPermission() async -> Bool {
@@ -162,6 +176,15 @@ final class MicrophoneCapture {
 
     func start() throws {
         let engine = AVAudioEngine()
+        try attachAndStart(engine)
+        self.engine = engine
+        observer = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine,
+                                                          queue: nil) { [weak self] _ in
+            self?.restart()
+        }
+    }
+
+    private func attachAndStart(_ engine: AVAudioEngine) throws {
         let input = engine.inputNode
         let fmt = input.inputFormat(forBus: 0)
         guard fmt.sampleRate > 0, fmt.channelCount > 0 else { throw CaptureError.noMicrophone }
@@ -171,10 +194,24 @@ final class MicrophoneCapture {
         }
         engine.prepare()
         try engine.start()
-        self.engine = engine
+        dlog("mic: \(Int(fmt.sampleRate)) Hz × \(fmt.channelCount) ch")
+    }
+
+    private func restart() {
+        guard let engine else { return }
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        do {
+            try attachAndStart(engine)
+            dlog("mic: input device changed, restarted")
+        } catch {
+            dlog("mic: restart after device change failed: \(error.localizedDescription)")
+        }
     }
 
     func stop() {
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+        observer = nil
         engine?.inputNode.removeTap(onBus: 0)
         engine?.stop()
         engine = nil

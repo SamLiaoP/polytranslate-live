@@ -22,6 +22,8 @@ final class AppModel: ObservableObject {
     @Published var showSettings = false
     /// 正在回看的歷史紀錄；nil = 顯示即時字幕。
     @Published var selectedSession: SessionRecord?
+    /// 等使用者確認要不要刪的紀錄（刪除無法復原，所以要問一下）。
+    @Published var sessionPendingDelete: SessionRecord?
 
     static let maxPanes = 4
 
@@ -68,7 +70,9 @@ final class AppModel: ObservableObject {
     /// 可選的語言清單（排除這台機器語音辨識不支援的）。
     var availableLanguages: [Language] {
         guard !supportedSpeechLocales.isEmpty else { return LanguageCatalog.all }
-        return LanguageCatalog.all.filter { supportedSpeechLocales.contains($0.speechLocale) }
+        let list = LanguageCatalog.all.filter { supportedSpeechLocales.contains($0.speechBCP47) }
+        // 比對方式萬一跟系統格式對不上，寧可全列也不要給一個空選單。
+        return list.isEmpty ? LanguageCatalog.all : list
     }
 
     func setTarget(_ id: String) {
@@ -78,8 +82,14 @@ final class AppModel: ObservableObject {
         for p in panes { p.target = t; p.clearError() }
     }
 
+    /// 這個語言是不是已經有別的欄在聽（選單裡要反灰）。
+    func isLanguageUsed(_ id: String, except pane: PaneEngine? = nil) -> Bool {
+        panes.contains { $0 !== pane && $0.language.id == id }
+    }
+
     func setPaneLanguage(_ pane: PaneEngine, _ id: String) {
         guard !isRunning, let i = panes.firstIndex(where: { $0 === pane }) else { return }
+        guard !isLanguageUsed(id, except: pane) else { return }
         settings.data.paneLanguages[i] = id
         pane.language = LanguageCatalog.language(id)
         pane.clearError()
@@ -131,12 +141,17 @@ final class AppModel: ObservableObject {
         engine.onError = { [weak self] text in
             self?.globalError = text
         }
+        engine.onLanesExhausted = { [weak self] in
+            dlog("all lanes dead; stopping session")
+            Task { await self?.stop() }
+        }
     }
 
     private func loadSpeechLocales() async {
         if #available(macOS 26.0, *) {
             let locales = await SpeechTranscriber.supportedLocales
-            supportedSpeechLocales = Set(locales.map(\.identifier))
+            supportedSpeechLocales = Set(locales.map { $0.identifier(.bcp47) })
+            dlog("speech locales: \(supportedSpeechLocales.sorted().joined(separator: " "))")
         }
     }
 
@@ -150,7 +165,8 @@ final class AppModel: ObservableObject {
         defer { isStarting = false }
         globalError = nil
         selectedSession = nil
-        for pane in panes { pane.clear(); pane.sessionStarted() }
+        // 先不清上一輪的字幕：權限被拒或引擎起不來的話，使用者不該平白失去畫面上的內容。
+        for pane in panes { pane.sessionStarted() }
 
         // 辨識語言 = 各欄的語言，再加上目標語言當「吸收通道」：
         // 有人說目標語言時，由它贏得仲裁並被丟掉，不會變成別欄的亂碼。
@@ -197,17 +213,29 @@ final class AppModel: ObservableObject {
             for pane in panes { pane.sessionStopped() }
             return
         }
+        for pane in panes { pane.clear() }
         startedAt = Date()
         isRunning = true
     }
 
     func stop() async {
+        // 還在啟動中（例如正在下載模型）就先等它起來，不然 start 會在我們背後把來源又打開。
+        var waited = 0
+        while isStarting && waited < 600 {   // 最多 30 秒
+            try? await Task.sleep(for: .milliseconds(50))
+            waited += 1
+        }
         guard isRunning else { return }
         testFeedTask?.cancel()
-        await engine.stop(hub: hub)
+        await engine.stop(hub: hub)      // 這裡會把最後一句定稿送進各欄
         await hub.stopAll()
         for pane in panes { pane.sessionStopped() }
         isRunning = false
+        // 最後幾句的翻譯可能還在跑，等一下再存，不然歷史紀錄裡最後一句沒有譯文。
+        let panes = self.panes
+        await withTaskGroup(of: Void.self) { group in
+            for p in panes { group.addTask { @MainActor in await p.waitForTranslations(seconds: 3) } }
+        }
         let started = startedAt ?? Date()
         startedAt = nil
         let record = SessionRecord(
@@ -265,11 +293,17 @@ final class AppModel: ObservableObject {
 
     private func saveTranscript(_ record: SessionRecord) {
         let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd HH-mm"
+        f.dateFormat = "yyyy-MM-dd HH-mm-ss"   // 到秒，同一分鐘停兩次不會互相覆蓋
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent(tr("transcript.folder"), isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent("\(f.string(from: record.startedAt)).md")
-        try? HistoryStore.markdown(record).write(to: url, atomically: true, encoding: .utf8)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try HistoryStore.markdown(record).write(to: url, atomically: true, encoding: .utf8)
+            dlog("transcript saved: \(url.lastPathComponent)")
+        } catch {
+            dlog("transcript save failed: \(error.localizedDescription)")
+            globalError = trf("err.transcriptSave", error.localizedDescription)
+        }
     }
 }

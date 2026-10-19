@@ -92,6 +92,10 @@ struct Language: Identifiable, Hashable, Codable {
 
     /// 給語言模型 prompt 用的英文名稱。
     var englishName: String { LanguageMap.englishName(translation) }
+
+    /// 語音辨識 locale 的 BCP 47 寫法（"zh-TW"）。拿來和 `SpeechTranscriber.supportedLocales` 比對，
+    /// 不用 `identifier` 字串直接比，免得系統回傳 "zh_TW" / "zh-Hant_TW" 格式不同就對不上。
+    var speechBCP47: String { Locale(identifier: speechLocale).identifier(.bcp47) }
 }
 
 enum LanguageCatalog {
@@ -126,12 +130,15 @@ struct SubtitleLine: Identifiable, Equatable {
 }
 
 /// 外部語言模型後端設定（OpenAI 相容 API）。介面目前沒有露出，保留給之後用。
+/// `apiKey` 故意不寫進 UserDefaults（明文落地）；真的要露出這個功能時改存 Keychain。
 struct LLMConfig: Codable, Equatable {
     var baseURL: String = "https://api.openai.com/v1"
     var apiKey: String = ""
     var model: String = "gpt-4o-mini"
     var glossary: String = ""
     var context: String = ""
+
+    private enum CodingKeys: String, CodingKey { case baseURL, model, glossary, context }
 }
 
 enum TranslationBackendKind: String, Codable, CaseIterable, Identifiable {
@@ -182,7 +189,8 @@ struct AppSettingsData: Codable, Equatable {
     var llm = LLMConfig()
     var fontSize: Double = 20
     var translateDrafts = true
-    var saveTranscript = true
+    /// 預設關閉：「文件」資料夾常被 iCloud 同步，自動把每場會議的逐字稿存進去應該由使用者自己打開。
+    var saveTranscript = false
     var sidebarVisible = false
     var arbiter = ArbiterTuning()
 
@@ -226,7 +234,22 @@ final class AppSettings: ObservableObject {
         L10n.language = data.uiLanguage
     }
 
+    private var persistTask: Task<Void, Never>?
+
+    /// 拖滑桿時每個 tick 都會動到 `data`，所以寫入延後 300 ms 合併；真正落盤在 `flush()`。
     private func persist() {
+        persistTask?.cancel()
+        persistTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            self?.flush()
+        }
+    }
+
+    /// 立刻寫進 UserDefaults。App 結束前要呼叫，不然最後 300 ms 內的改動會丟掉。
+    func flush() {
+        persistTask?.cancel()
+        persistTask = nil
         if let raw = try? JSONEncoder().encode(data) {
             UserDefaults.standard.set(raw, forKey: Self.key)
         }
@@ -300,6 +323,8 @@ enum ScriptDetector {
     static func trimLeadingMismatch(_ text: String, _ language: Language) -> String {
         guard language.script != .other else { return text }
         func belongs(_ u: Unicode.Scalar) -> Bool {
+            // 數字哪個語言都有：「2024 年營收」「3 people」開頭的數字不能剪。
+            if CharacterSet.decimalDigits.contains(u) { return true }
             switch language.script {
             case .han: return (0x4E00...0x9FFF).contains(u.value) || (0x3400...0x4DBF).contains(u.value)
             case .kana: return (0x3040...0x30FF).contains(u.value) || (0x4E00...0x9FFF).contains(u.value)

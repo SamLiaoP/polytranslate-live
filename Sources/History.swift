@@ -9,8 +9,7 @@ struct SessionRecord: Identifiable, Codable, Equatable {
         var translated: String?
         var source: CaptureKind
     }
-    struct Pane: Codable, Equatable, Identifiable {
-        var id: String { language.id }
+    struct Pane: Codable, Equatable {
         var language: Language
         var target: Language
         var lines: [Line]
@@ -25,13 +24,27 @@ struct SessionRecord: Identifiable, Codable, Equatable {
 
     var duration: TimeInterval { endedAt.timeIntervalSince(startedAt) }
     var lineCount: Int { panes.reduce(0) { $0 + $1.lines.count } }
+    /// DateFormatter 很貴，側欄每一列每次重繪都 new 一個會卡；兩種介面語言各快取一個。
+    private static let titleFormatters: [UILanguage: DateFormatter] = {
+        var d: [UILanguage: DateFormatter] = [:]
+        for ui in UILanguage.allCases {
+            let f = DateFormatter()
+            f.locale = Locale(identifier: ui == .en ? "en_US" : "zh_TW")
+            f.dateStyle = .medium
+            f.timeStyle = .short
+            d[ui] = f
+        }
+        return d
+    }()
+    static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
+
     /// 列表標題：日期 + 時間。
     var title: String {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: L10n.language == .en ? "en_US" : "zh_TW")
-        f.dateStyle = .medium
-        f.timeStyle = .short
-        return f.string(from: startedAt)
+        (Self.titleFormatters[L10n.language] ?? Self.titleFormatters[.en]!).string(from: startedAt)
     }
     var durationText: String {
         let s = Int(duration)
@@ -72,13 +85,23 @@ final class HistoryStore: ObservableObject {
 
     private func url(for id: UUID) -> URL { dir.appendingPathComponent("\(id.uuidString).json") }
 
+    /// 在背景讀檔，不卡啟動；幾百場會議的 JSON 在主執行緒同步讀會讓視窗晚出來。
     func load() {
-        let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
-        sessions = files
-            .filter { $0.pathExtension == "json" }
-            .compactMap { try? decoder.decode(SessionRecord.self, from: Data(contentsOf: $0)) }
-            .sorted { $0.startedAt > $1.startedAt }
-        dlog("history loaded: \(sessions.count) sessions")
+        let dir = self.dir, decoder = self.decoder
+        Task { [weak self] in
+            let loaded = await Task.detached(priority: .utility) { () -> [SessionRecord] in
+                let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+                return files
+                    .filter { $0.pathExtension == "json" }
+                    .compactMap { try? decoder.decode(SessionRecord.self, from: Data(contentsOf: $0)) }
+                    .sorted { $0.startedAt > $1.startedAt }
+            }.value
+            guard let self else { return }
+            // 讀檔期間可能已經存了新的一筆，別把它蓋掉。
+            let fresh = sessions.filter { s in !loaded.contains { $0.id == s.id } }
+            sessions = (fresh + loaded).sorted { $0.startedAt > $1.startedAt }
+            dlog("history loaded: \(sessions.count) sessions")
+        }
     }
 
     func save(_ record: SessionRecord) {
@@ -94,14 +117,14 @@ final class HistoryStore: ObservableObject {
     }
 
     func delete(_ record: SessionRecord) {
-        try? FileManager.default.removeItem(at: url(for: record.id))
+        do { try FileManager.default.removeItem(at: url(for: record.id)) }
+        catch { dlog("history delete failed: \(error.localizedDescription)") }
         sessions.removeAll { $0.id == record.id }
     }
 
     /// 匯出成 Markdown 文字（給「儲存逐字稿」與複製用）。
     static func markdown(_ r: SessionRecord) -> String {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss"
+        let f = SessionRecord.timeFormatter
         var out = trf("transcript.title", r.title) + "\n" + trf("transcript.meta", r.source.label, r.target.name) + "\n\n"
         for p in r.panes where !p.lines.isEmpty {
             let title = p.language.translation == p.target.translation

@@ -59,9 +59,22 @@ struct ContentView: View {
             }
             .animation(.spring(duration: 0.3), value: settings.data.sidebarVisible)
         }
-        .frame(minWidth: CGFloat(max(1, model.panes.count)) * 380 + 60 + (settings.data.sidebarVisible ? 260 : 0), minHeight: 520)
+        // 每欄最少 280 pt：四欄加側欄 1420 pt，13 吋 MacBook（1470 pt）還放得下。
+        .frame(minWidth: CGFloat(max(1, model.panes.count)) * 280 + 60 + (settings.data.sidebarVisible ? 260 : 0), minHeight: 520)
         .sheet(isPresented: $model.showSettings) {
             SettingsSheet(settings: settings).environmentObject(model)
+        }
+        .confirmationDialog(tr("history.delete.confirm"),
+                            isPresented: Binding(get: { model.sessionPendingDelete != nil },
+                                                 set: { if !$0 { model.sessionPendingDelete = nil } }),
+                            titleVisibility: .visible) {
+            Button(tr("history.delete"), role: .destructive) {
+                if let r = model.sessionPendingDelete { model.deleteSession(r) }
+                model.sessionPendingDelete = nil
+            }
+            Button(tr("cancel"), role: .cancel) { model.sessionPendingDelete = nil }
+        } message: {
+            Text(tr("history.delete.note"))
         }
     }
 }
@@ -133,7 +146,7 @@ private struct HistorySidebar: View {
                             .contextMenu {
                                 Button(tr("history.copy")) { model.copyToPasteboard(s) }
                                 Divider()
-                                Button(tr("history.delete"), role: .destructive) { model.deleteSession(s) }
+                                Button(tr("history.delete"), role: .destructive) { model.sessionPendingDelete = s }
                             }
                         }
                     }
@@ -197,7 +210,7 @@ private struct HistoryDetail: View {
                         .background(Capsule().fill(Palette.pill))
                 }
                 .buttonStyle(.plain)
-                Button(role: .destructive) { model.deleteSession(record) } label: {
+                Button(role: .destructive) { model.sessionPendingDelete = record } label: {
                     Image(systemName: "trash").font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.secondary)
                         .frame(width: 30, height: 30)
@@ -205,12 +218,13 @@ private struct HistoryDetail: View {
                 }
                 .buttonStyle(.plain)
                 .help(tr("history.delete"))
+                .accessibilityLabel(tr("history.delete"))
             }
             .padding(.horizontal, 24)
             .padding(.bottom, 16)
 
             HStack(spacing: 16) {
-                ForEach(record.panes) { p in
+                ForEach(Array(record.panes.enumerated()), id: \.offset) { _, p in
                     VStack(alignment: .leading, spacing: 0) {
                         HStack(spacing: 8) {
                             Text(p.language.displayName).font(.system(size: 14, weight: .semibold))
@@ -272,11 +286,18 @@ private struct TopBar: View {
             // 中：開始鈕 + 計時
             HStack(spacing: 16) {
                 StartButton(settings: settings)
-                TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                    Text(elapsed(at: ctx.date))
+                if model.isRunning {
+                    TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                        Text(elapsed(at: ctx.date))
+                            .font(.system(size: 26, weight: .medium, design: .rounded))
+                            .monospacedDigit()
+                    }
+                } else {
+                    // 閒置時不要每秒重繪。
+                    Text("00:00:00")
                         .font(.system(size: 26, weight: .medium, design: .rounded))
                         .monospacedDigit()
-                        .foregroundStyle(model.isRunning ? .primary : .secondary)
+                        .foregroundStyle(.secondary)
                 }
             }
             .frame(maxWidth: .infinity)
@@ -331,6 +352,7 @@ private struct StartButton: View {
         .keyboardShortcut(.space, modifiers: [.command])
         .onHover { hover = $0 }
         .help(model.isRunning ? tr("stop.help") : tr("start.help"))
+        .accessibilityLabel(model.isRunning ? tr("stop") : tr("start"))
     }
 }
 
@@ -351,6 +373,7 @@ private struct RoundIconButton: View {
         .buttonStyle(.plain)
         .onHover { hover = $0 }
         .help(help)
+        .accessibilityLabel(help)
     }
 }
 
@@ -476,9 +499,9 @@ private struct PaneView: View {
                 .padding(.bottom, 12)
             Rectangle().fill(Palette.cardStroke).frame(height: 1).padding(.horizontal, 16)
             if let err = pane.lastError {
-                Banner(text: err, kind: .error,
-                       actionTitle: isPackError(err) ? tr("pack.download") : nil,
-                       action: isPackError(err) ? requestDownload : nil)
+                Banner(text: err.message, kind: .error,
+                       actionTitle: err.packMissing ? tr("pack.download") : nil,
+                       action: err.packMissing ? requestDownload : nil)
                     .padding(.horizontal, 16).padding(.top, 12)
             } else if let hint = pane.translationHint {
                 Banner(text: hint, kind: .info, actionTitle: tr("pack.download"), action: requestDownload)
@@ -501,17 +524,13 @@ private struct PaneView: View {
                     do {
                         try await session.prepareTranslation()
                         downloadMessage = tr("pack.ready")
-                        pane.clearError()
+                        pane.languagePackInstalled()
                     } catch {
                         downloadMessage = trf("pack.failed", error.localizedDescription)
                     }
                     downloadConfig = nil
                 }
         }
-    }
-
-    private func isPackError(_ text: String) -> Bool {
-        text.contains("語言包") || text.lowercased().contains("language pack")
     }
 
     private func requestDownload() {
@@ -528,6 +547,7 @@ private struct PaneView: View {
                 PillMenu(title: pane.language.displayName, symbol: "ear.fill") {
                     ForEach(model.availableLanguages) { lang in
                         Button(lang.displayName) { model.setPaneLanguage(pane, lang.id) }
+                            .disabled(model.isLanguageUsed(lang.id, except: pane))
                     }
                 }
                 .disabled(model.isRunning)
@@ -558,6 +578,7 @@ private struct PaneView: View {
             }
             .buttonStyle(.plain)
             .help(tr("pane.clear"))
+            .accessibilityLabel(tr("pane.clear"))
 
             if model.panes.count > 1 {
                 Button { model.removePane(pane) } label: {
@@ -570,6 +591,7 @@ private struct PaneView: View {
                 .buttonStyle(.plain)
                 .disabled(model.isRunning)
                 .help(tr("pane.close"))
+                .accessibilityLabel(tr("pane.close"))
             }
         }
     }
@@ -672,7 +694,8 @@ private struct StatusDot: View {
                 .fill(running ? Color.green : Color.white.opacity(0.25))
                 .frame(width: 8, height: 8)
                 .shadow(color: running ? Color.green.opacity(pulse ? 0.9 : 0.2) : .clear, radius: pulse ? 6 : 2)
-                .onAppear { pulse = true }
+                .onAppear { pulse = running }
+                .onChange(of: running) { _, now in pulse = now }   // 停止時收掉呼吸燈，再開始時重新閃
                 .animation(running ? .easeInOut(duration: 1.1).repeatForever(autoreverses: true) : .default, value: pulse)
             if !text.isEmpty {
                 Text(text).font(.system(size: 12)).foregroundStyle(.secondary)

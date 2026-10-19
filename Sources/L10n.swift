@@ -16,7 +16,13 @@ enum UILanguage: String, Codable, CaseIterable, Identifiable {
 
 /// 字串表。`tr("key")` 取字串，`trf("key", args…)` 帶格式。
 enum L10n {
-    nonisolated(unsafe) static var language: UILanguage = .en
+    /// 主執行緒寫、背景執行緒（辨識通道的狀態訊息、擷取錯誤）讀，所以用鎖保護。
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var _language: UILanguage = .en
+    static var language: UILanguage {
+        get { lock.withLock { _language } }
+        set { lock.withLock { _language = newValue } }
+    }
 
     static func t(_ key: String) -> String {
         guard let entry = table[key] else { return key }
@@ -86,6 +92,7 @@ enum L10n {
         "err.llmHTTP": ("The external language model returned an error (%d): %@", "外部語言模型回應錯誤（%d）：%@"),
         "err.llmBadResponse": ("Unexpected response from the external language model.", "外部語言模型回應格式不符。"),
         "err.noLane": ("Speech recognition could not start.\n%@", "語音辨識無法啟動。\n%@"),
+        "err.transcriptSave": ("Could not save the transcript: %@", "逐字稿存檔失敗：%@"),
         "menu.about": ("About PolyTranslate Live", "關於 多語即譯"),
         "menu.settings": ("Settings…", "設定…"),
         "menu.hide": ("Hide PolyTranslate Live", "隱藏 多語即譯"),
@@ -100,7 +107,7 @@ enum L10n {
         "menu.window": ("Window", "視窗"),
         "menu.minimize": ("Minimize", "縮到最小"),
         "menu.close": ("Close", "關閉"),
-        "transcript.folder": ("PolyTranslate Live", "多語即譯"),
+        "transcript.folder": ("PolyTranslate Live", "PolyTranslate Live"),   // 兩種介面語言同名，切語言不會分成兩個資料夾
         "transcript.title": ("# PolyTranslate Live transcript %@", "# 多語即譯逐字稿 %@"),
         "transcript.meta": ("Source: %@　Translate to: %@", "來源：%@　翻譯成：%@"),
         "lang.paren": (" (%@)", "（%@）"),
@@ -123,6 +130,9 @@ enum L10n {
         "history.empty": ("No recordings yet.\nEach session is saved here when you press Stop.", "還沒有紀錄。\n每次按「停止」後，這一段會存在這裡。"),
         "history.lines": ("%d lines", "%d 句"),
         "history.delete": ("Delete", "刪除"),
+        "history.delete.confirm": ("Delete this recording?", "要刪除這筆紀錄嗎？"),
+        "history.delete.note": ("This cannot be undone.", "刪除後無法復原。"),
+        "cancel": ("Cancel", "取消"),
         "history.copy": ("Copy as text", "複製成文字"),
         "history.back": ("Back to live", "回到即時字幕"),
         "history.live": ("Live", "即時"),

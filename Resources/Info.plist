@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
-	<string>zh-Hant</string>
+	<string>en</string>
 	<key>CFBundleDisplayName</key>
 	<string>PolyTranslate Live</string>
 	<key>CFBundleExecutable</key>
@@ -18,8 +18,12 @@
 	<string>0.1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>26.4</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>© 2026 Sam Liao. MIT License.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSPrincipalClass</key>
@@ -30,7 +34,7 @@
 	<string>PolyTranslate Live needs speech recognition to turn speech into captions. 需要語音辨識權限才能把語音轉成字幕。</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>PolyTranslate Live needs Screen &amp; System Audio Recording to caption the audio your Mac plays (meetings, videos). No video is stored. 需要「螢幕與系統音訊錄製」權限才能擷取電腦播放的聲音，不會儲存畫面。</string>
-	<key>NSSystemAudioRecordingUsageDescription</key>
+	<key>NSAudioCaptureUsageDescription</key>
 	<string>PolyTranslate Live needs system audio access to caption the audio your Mac plays. 需要系統音訊權限才能擷取電腦播放的聲音。</string>
 </dict>
 </plist>

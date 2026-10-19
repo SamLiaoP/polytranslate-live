@@ -5,6 +5,7 @@
 #   ./build.sh            編譯到 build/PolyTranslateLive.app
 #   ./build.sh install    編譯並安裝到 ~/Applications/PolyTranslate Live.app（Launchpad / Spotlight 找得到）
 #   ./build.sh run        編譯、安裝、啟動
+#   ./build.sh test       編譯並執行 tests/ 裡的單元測試（ScriptDetector、Arbiter）
 set -e
 cd "$(dirname "$0")"
 
@@ -32,6 +33,17 @@ if [ "$(uname -m)" != "arm64" ]; then
 fi
 
 mkdir -p "$OUT"
+
+if [ "$1" = "test" ]; then
+  echo "→ 編譯測試"
+  # main.swift 有 top-level code，換成測試的主程式；其餘原始碼全部一起編。
+  swiftc -sdk "$SDK" -target arm64-apple-macos26.4 -swift-version 5 \
+    $(ls Sources/*.swift | grep -v '/main.swift$') tests/main.swift -o "$OUT/tests"
+  echo "→ 執行"
+  "$OUT/tests"
+  exit $?
+fi
+
 echo "→ 編譯（SDK $(xcrun --show-sdk-version)，$(swiftc --version 2>/dev/null | head -1)）"
 swiftc -O -sdk "$SDK" -target arm64-apple-macos26.4 -swift-version 5 \
   Sources/*.swift -o "$OUT/$APP_NAME"

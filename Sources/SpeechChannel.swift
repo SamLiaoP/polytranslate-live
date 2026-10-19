@@ -55,6 +55,8 @@ final class SpeechChannel: @unchecked Sendable {
     private var analyzerFormat: AVAudioFormat?
     private var resultsTask: Task<Void, Never>?
     private var analyzerTask: Task<Void, Never>?
+    /// 佇列塞滿被丟掉的 buffer 數。丟掉代表這條通道的時間軸會比別條落後，仲裁可能配錯，所以要記下來。
+    private var dropped = 0
 
     private final class Once: @unchecked Sendable { var done = false }
 
@@ -159,7 +161,7 @@ final class SpeechChannel: @unchecked Sendable {
         samples.withUnsafeBufferPointer { dst[0].update(from: $0.baseAddress!, count: samples.count) }
 
         guard let conv else {
-            cont.yield(AnalyzerInput(buffer: src))
+            yield(AnalyzerInput(buffer: src), to: cont)
             return
         }
         let ratio = fmt.sampleRate / inputFormat.sampleRate
@@ -173,9 +175,20 @@ final class SpeechChannel: @unchecked Sendable {
             return src
         }
         guard error == nil, out.frameLength > 0 else { return }
-        cont.yield(AnalyzerInput(buffer: out))
+        yield(AnalyzerInput(buffer: out), to: cont)
     }
 
+    private func yield(_ input: AnalyzerInput, to cont: AsyncStream<AnalyzerInput>.Continuation) {
+        if case .dropped = cont.yield(input) {
+            let n = lock.withLock { dropped += 1; return dropped }
+            if n == 1 || n % 200 == 0 {
+                dlog("WARNING \(locale.identifier): analyzer queue full, dropped \(n) buffers (timeline will drift)")
+            }
+        }
+    }
+
+    /// 把還在佇列裡的音訊全部辨識完（最後一句的定稿在這裡吐出來），再收掉。
+    /// 每一步都有逾時，免得結束 App 時卡死。
     func stop() async {
         let (cont, analyzer, results, analyzerTask) = lock.withLock {
             defer { continuation = nil; self.analyzer = nil; resultsTask = nil; self.analyzerTask = nil }
@@ -183,9 +196,16 @@ final class SpeechChannel: @unchecked Sendable {
         }
         cont?.finish()
         if let analyzer {
-            do { try await analyzer.finalizeAndFinishThroughEndOfInput() } catch { await analyzer.cancelAndFinishNow() }
+            let finished = await withTimeout(5) { () -> Bool in
+                do { try await analyzer.finalizeAndFinishThroughEndOfInput(); return true } catch { return false }
+            }
+            if finished != true {
+                dlog("\(locale.identifier): finalize timed out or failed; cancelling")
+                await analyzer.cancelAndFinishNow()
+            }
         }
-        await analyzerTask?.value
-        results?.cancel()
+        if let analyzerTask, await withTimeout(3, { await analyzerTask.value }) == nil { analyzerTask.cancel() }
+        // 結果串流會在 analyzer 結束後自己收尾；等它跑完，最後的定稿才會送出去。
+        if let results, await withTimeout(3, { await results.value }) == nil { results.cancel() }
     }
 }

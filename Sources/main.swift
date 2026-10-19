@@ -39,10 +39,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        model.settings.flush()
+    }
+
+    /// 正在錄的話先停（把最後一句存進歷史），最多等 10 秒；辨識器卡住也不能讓 App 關不掉。
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard model.isRunning else { return .terminateNow }
+        guard model.isRunning || model.isStarting else { return .terminateNow }
+        let model = self.model
         Task {
-            await model.stop()
+            if await withTimeout(10, { await model.stop() }) == nil {
+                dlog("stop timed out on quit; terminating anyway")
+            }
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
