@@ -134,6 +134,9 @@ private struct HistorySidebar: View {
                                         Text(s.durationText).monospacedDigit()
                                         Text("·")
                                         Text(trf("history.lines", s.lineCount))
+                                        if s.recording != nil {
+                                            Image(systemName: "waveform").accessibilityLabel(tr("recording.badge.help"))
+                                        }
                                     }
                                     .font(.system(size: 11))
                                     .foregroundStyle(.tertiary)
@@ -145,6 +148,10 @@ private struct HistorySidebar: View {
                             }
                             .contextMenu {
                                 Button(tr("history.copy")) { model.copyToPasteboard(s) }
+                                if history.recordingURL(for: s) != nil {
+                                    Button(tr("recording.save")) { model.saveRecording(s) }
+                                    Button(tr("recording.reveal")) { model.revealRecording(s) }
+                                }
                                 Divider()
                                 Button(tr("history.delete"), role: .destructive) { model.sessionPendingDelete = s }
                             }
@@ -210,6 +217,15 @@ private struct HistoryDetail: View {
                         .background(Capsule().fill(Palette.pill))
                 }
                 .buttonStyle(.plain)
+                if model.history.recordingURL(for: record) != nil {
+                    Button { model.saveRecording(record) } label: {
+                        Label(tr("recording.save"), systemImage: "arrow.down.circle").font(.system(size: 12, weight: .medium))
+                            .padding(.horizontal, 12).frame(height: 30)
+                            .background(Capsule().fill(Palette.pill))
+                    }
+                    .buttonStyle(.plain)
+                    .contextMenu { Button(tr("recording.reveal")) { model.revealRecording(record) } }
+                }
                 Button(role: .destructive) { model.sessionPendingDelete = record } label: {
                     Image(systemName: "trash").font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.secondary)
@@ -291,6 +307,17 @@ private struct TopBar: View {
                         Text(elapsed(at: ctx.date))
                             .font(.system(size: 26, weight: .medium, design: .rounded))
                             .monospacedDigit()
+                    }
+                    if model.isRecording {
+                        HStack(spacing: 5) {
+                            Circle().fill(Color.red).frame(width: 7, height: 7)
+                            Text(tr("recording.badge")).font(.system(size: 11, weight: .bold)).tracking(1)
+                        }
+                        .foregroundStyle(Color.red)
+                        .padding(.horizontal, 8).frame(height: 22)
+                        .background(Capsule().fill(Color.red.opacity(0.15)))
+                        .help(tr("recording.badge.help"))
+                        .accessibilityLabel(tr("recording.badge.help"))
                     }
                 } else {
                     // 閒置時不要每秒重繪。
@@ -841,6 +868,42 @@ private struct SettingsSheet: View {
                         }
                         .controlSize(.small)
                     }
+                }
+                Section(tr("settings.recognition")) {
+                    Toggle(tr("settings.listenTarget"), isOn: $settings.data.listenTarget)
+                    Text(tr("settings.listenTarget.help")).font(.caption).foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(tr("settings.vocabulary"))
+                        TextEditor(text: $settings.data.vocabulary)
+                            .font(.system(size: 12, design: .monospaced))
+                            .frame(height: 90)
+                            .scrollContentBackground(.hidden)
+                            .background(RoundedRectangle(cornerRadius: 6).fill(Color.black.opacity(0.25)))
+                            .accessibilityLabel(tr("settings.vocabulary"))
+                        Text(tr("settings.vocabulary.help")).font(.caption).foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Section(tr("settings.wording")) {
+                    Toggle(tr("settings.taiwanWording"), isOn: $settings.data.taiwanWording)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(tr("settings.wordingRules"))
+                        TextEditor(text: $settings.data.wordingRules)
+                            .font(.system(size: 12, design: .monospaced))
+                            .frame(height: 70)
+                            .scrollContentBackground(.hidden)
+                            .background(RoundedRectangle(cornerRadius: 6).fill(Color.black.opacity(0.25)))
+                            .accessibilityLabel(tr("settings.wordingRules"))
+                        Text(tr("settings.wordingRules.help")).font(.caption).foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Section(tr("settings.recording")) {
+                    Toggle(tr("settings.recordAudio"), isOn: $settings.data.recordAudio)
+                    Text(tr("settings.recording.note"))
+                        .font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Section(tr("settings.transcript")) {
                     Toggle(trf("settings.saveTranscript", tr("transcript.folder")), isOn: $settings.data.saveTranscript)

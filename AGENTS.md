@@ -20,8 +20,8 @@ Apple `Translation.framework` → two-line subtitles per language pane. Everythi
 
 ```bash
 ./build.sh install     # compiles with swiftc, assembles the .app, ad-hoc signs it,
-                       # copies it to ~/Applications/PolyTranslate Live.app
-open ~/Applications/PolyTranslate\ Live.app
+                       # copies it to /Applications/PolyTranslate Live.app
+open /Applications/PolyTranslate\ Live.app
 ```
 
 `./build.sh` alone only builds `build/PolyTranslateLive.app`. `./build.sh run` builds, installs and launches.
@@ -35,14 +35,14 @@ open ~/Applications/PolyTranslate\ Live.app
    download the languages used (e.g. English, Traditional Chinese). Without them translation falls back
    to Apple's online service (slower, needs network). The app shows a "Download language pack" button.
 
-Because the app is ad-hoc signed, rebuilding may make macOS treat it as a new app and ask for Screen
+Run `tools/make_cert.sh` once to create a self-signed signing certificate; `build.sh` then uses it automatically and permissions survive rebuilds. Without it the app is ad-hoc signed, so rebuilding may make macOS treat it as a new app and ask for Screen
 Recording again. Tell the user this is expected.
 
 ## Verify without permissions
 
 ```bash
 say -v Samantha -o /tmp/en.wav --data-format=LEI16@16000 "Good morning everyone. Today we review the results."
-~/Applications/PolyTranslate\ Live.app/Contents/MacOS/PolyTranslateLive --test-wav /tmp/en.wav
+/Applications/PolyTranslate\ Live.app/Contents/MacOS/PolyTranslateLive --test-wav /tmp/en.wav
 sleep 20; tail -20 ~/Library/Logs/PolyTranslateLive.log
 ```
 
@@ -66,14 +66,18 @@ No XCTest; it is a plain executable that exits non-zero on failure. Add cases to
 
 | Path | Purpose |
 |---|---|
+| `Install.command` | double-click installer for end users: environment checks, `git pull`, optional `tools/make_cert.sh`, `./build.sh install`, launch |
 | `Sources/` | all Swift sources; `main.swift` is the AppKit entry point (there is no Xcode project) |
 | `Sources/RecognitionEngine.swift` | parallel lanes + `Arbiter` (confidence vote, overlap trimming, script checks) |
-| `Sources/L10n.swift` | UI string table, English and Traditional Chinese; add keys here, never hard-code UI text |
+| `Sources/L10n.swift` | UI string table in English, Traditional Chinese, Japanese and Korean (one array per key, in that order); add keys here, never hard-code UI text |
 | `tests/main.swift` | unit tests for the pure logic (run with `./build.sh test`) |
+| `Sources/TaiwanWording.swift` | generated from OpenCC TWPhrases/TWVariants (Apache-2.0, `third_party/OpenCC-LICENSE.txt`) plus a few app rules; applied to zh-Hant translations |
+| `Sources/SessionRecorder.swift` | writes each session's audio to `<session id>.m4a` next to the history JSON; subscribes to `AudioHub`, sums sources on a 250 ms tick |
 | `Sources/Models.swift` | settings (`UserDefaults` key `polytranslate.settings.v1`), `LanguageCatalog` |
 | `Resources/Info.plist` | permission usage strings, bundle ID `dev.samliao.polytranslatelive` |
 | `tools/make_icon.swift` | regenerates the icon (no SF Symbols — Apple's license forbids them in icons) |
-| `~/Library/Application Support/PolyTranslateLive/history/` | saved sessions, one JSON each |
+| `tools/make_cert.sh` | creates the self-signed “PolyTranslate Live Dev” certificate so `build.sh` signs with a stable identity |
+| `~/Library/Application Support/PolyTranslateLive/history/` | saved sessions, one JSON each, plus the session's `.m4a` recording when recording is on (default on; Settings › Recording) |
 | `~/Documents/PolyTranslate Live/` | Markdown transcripts, only if the user enables it in Settings (off by default) |
 
 ## Conventions when modifying
@@ -82,6 +86,6 @@ No XCTest; it is a plain executable that exits non-zero on failure. Add cases to
   dependencies unless asked.
 - Swift language mode is 5 (`-swift-version 5`); concurrency warnings are tolerated, errors are not.
 - All user-visible text goes through `tr("key")` / `trf("key", args)` with entries for both languages.
-- Chinese UI text uses Taiwan wording (繁體中文、台灣用語).
+- Chinese UI text uses Taiwan wording (繁體中文、台灣用語). Every key needs all four languages; `tr()` falls back to English if one is missing.
 - Never log recognized text or translations with `dlog(...)`; use `dlogv(...)` so it stays out of the log unless verbose.
 - After changes, run `./build.sh test`, then `./build.sh` and the test-mode check above.

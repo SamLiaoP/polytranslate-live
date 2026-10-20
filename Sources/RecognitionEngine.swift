@@ -37,6 +37,7 @@ final class RecognitionEngine {
     private weak var hub: AudioHub?
 
     func start(languages: [Language], captures: [CaptureKind], hub: AudioHub,
+               vocabulary: [String] = [],
                tuning: @escaping () -> ArbiterTuning = { .standard }) async throws {
         guard !isRunning else { return }
         self.languages = languages
@@ -60,7 +61,7 @@ final class RecognitionEngine {
         for capture in captures {
             for (slot, lang) in languages.enumerated() {
                 let key = LaneKey(capture: capture, slot: slot)
-                let ch = SpeechChannel(locale: Locale(identifier: lang.speechLocale))
+                let ch = SpeechChannel(locale: Locale(identifier: lang.speechLocale), vocabulary: vocabulary)
                 ch.onEvent = { [weak self] event in
                     Task { @MainActor in self?.handle(event, key: key) }
                 }

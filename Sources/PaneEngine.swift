@@ -124,7 +124,7 @@ final class PaneEngine: ObservableObject, Identifiable {
 
     /// 開始時先確認語言包狀態：不支援就提早報錯；支援但沒裝（會走線上）就先提示，不必等第一句翻完。
     private func checkTranslationReadiness() {
-        guard settings.data.backend == .apple, !sameLanguage else { return }
+        guard !sameLanguage else { return }
         let lang = language, tgt = target
         Task { [weak self] in
             guard let self else { return }
@@ -148,19 +148,18 @@ final class PaneEngine: ObservableObject, Identifiable {
     private func translate(line: SubtitleLine) {
         guard !sameLanguage else { return }
         let lang = language, tgt = target
-        let context = lines.suffix(4).dropLast().map(\.original)
         translationTasks[line.id] = Task { [weak self] in
             guard let self else { return }
             defer { translationTasks[line.id] = nil }
             do {
-                let t = try await translator.translate(line.original, fromSpeechLocale: lang.speechLocale,
-                                                       to: tgt.translation, recentContext: Array(context))
+                let t = localize(try await translator.translate(line.original, fromSpeechLocale: lang.speechLocale,
+                                                                to: tgt.translation))
                 if let i = lines.firstIndex(where: { $0.id == line.id }) {
                     lines[i].translated = t
                     lastError = nil
                 }
                 dlogv("[\(id)] translated: \(t)")
-                if settings.data.backend == .apple, translationHint == nil,
+                if translationHint == nil,
                    await translator.appleUsingFallback(from: lang.speechLocale, to: tgt.translation) {
                     translationHint = tr("hint.online")
                 }
@@ -179,7 +178,7 @@ final class PaneEngine: ObservableObject, Identifiable {
     /// 草稿翻譯：等 350 ms 沒有新字再送，避免每個音節都翻一次。
     /// 走線上備援（0.3–1 秒一筆）時不翻草稿，否則草稿會把定稿的翻譯擠在佇列後面。
     private func scheduleDraftTranslation(_ source: CaptureKind) {
-        guard settings.data.translateDrafts, settings.data.backend == .apple, !sameLanguage else { return }
+        guard settings.data.translateDrafts, !sameLanguage else { return }
         draftTasks[source]?.cancel()
         guard let text = drafts[source], text.count >= 2, text != lastDraftSent[source] else { return }
         let lang = language, tgt = target
@@ -191,9 +190,15 @@ final class PaneEngine: ObservableObject, Identifiable {
             lastDraftSent[source] = text
             guard let t = try? await translator.translate(text, fromSpeechLocale: lang.speechLocale, to: tgt.translation) else { return }
             if !Task.isCancelled, let current = drafts[source], current.hasPrefix(text) || current == text {
-                draftTranslations[source] = t
+                draftTranslations[source] = localize(t)
             }
         }
+    }
+
+    /// 目標是繁體中文且設定開著時，把譯文換成台灣用語。
+    private func localize(_ text: String) -> String {
+        guard target.translation == "zh-Hant", settings.data.taiwanWording else { return text }
+        return TaiwanWording.apply(text, custom: TaiwanWording.parseRules(settings.data.wordingRules))
     }
 
     private static let timeFormatter: DateFormatter = {

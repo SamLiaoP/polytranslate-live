@@ -60,9 +60,13 @@ final class SpeechChannel: @unchecked Sendable {
 
     private final class Once: @unchecked Sendable { var done = false }
 
-    init(locale: Locale, fastResults: Bool = true) {
+    /// 餵給辨識器的詞彙（專有名詞、人名、產品名），讓它偏向這些拼法。
+    private let vocabulary: [String]
+
+    init(locale: Locale, fastResults: Bool = true, vocabulary: [String] = []) {
         self.locale = locale
         self.fastResults = fastResults
+        self.vocabulary = vocabulary
     }
 
     private func emit(_ e: SpeechEvent) { onEvent?(e) }
@@ -95,6 +99,11 @@ final class SpeechChannel: @unchecked Sendable {
             throw SpeechError.noAudioFormat
         }
         let analyzer = SpeechAnalyzer(modules: [transcriber])
+        if !vocabulary.isEmpty {
+            let context = AnalysisContext()
+            context.contextualStrings[.general] = vocabulary
+            try await analyzer.setContext(context)
+        }
         try await analyzer.prepareToAnalyze(in: fmt)
 
         // 有界佇列：擷取端永不阻塞，真塞住時丟最舊的，而不是把延遲無限拉長。

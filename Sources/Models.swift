@@ -90,9 +90,6 @@ struct Language: Identifiable, Hashable, Codable {
         }
     }
 
-    /// 給語言模型 prompt 用的英文名稱。
-    var englishName: String { LanguageMap.englishName(translation) }
-
     /// 語音辨識 locale 的 BCP 47 寫法（"zh-TW"）。拿來和 `SpeechTranscriber.supportedLocales` 比對，
     /// 不用 `identifier` 字串直接比，免得系統回傳 "zh_TW" / "zh-Hant_TW" 格式不同就對不上。
     var speechBCP47: String { Locale(identifier: speechLocale).identifier(.bcp47) }
@@ -127,24 +124,6 @@ struct SubtitleLine: Identifiable, Equatable {
     var translationFailed = false
     let source: CaptureKind
     let timestamp: Date
-}
-
-/// 外部語言模型後端設定（OpenAI 相容 API）。介面目前沒有露出，保留給之後用。
-/// `apiKey` 故意不寫進 UserDefaults（明文落地）；真的要露出這個功能時改存 Keychain。
-struct LLMConfig: Codable, Equatable {
-    var baseURL: String = "https://api.openai.com/v1"
-    var apiKey: String = ""
-    var model: String = "gpt-4o-mini"
-    var glossary: String = ""
-    var context: String = ""
-
-    private enum CodingKeys: String, CodingKey { case baseURL, model, glossary, context }
-}
-
-enum TranslationBackendKind: String, Codable, CaseIterable, Identifiable {
-    case apple
-    case llm
-    var id: String { rawValue }
 }
 
 /// 語言仲裁的門檻。實測（TTS 素材）：正確語言的定稿信心值 ≥ 0.65，錯誤語言 0.18–0.55。
@@ -185,14 +164,32 @@ struct AppSettingsData: Codable, Equatable {
     /// 每個框框聽的語言，依左到右排列。預設只有一個。
     var paneLanguages: [String] = ["en"]
     var source: AudioSourceKind = .system
-    var backend: TranslationBackendKind = .apple
-    var llm = LLMConfig()
     var fontSize: Double = 20
     var translateDrafts = true
     /// 預設關閉：「文件」資料夾常被 iCloud 同步，自動把每場會議的逐字稿存進去應該由使用者自己打開。
     var saveTranscript = false
+    /// 翻譯時同時把聲音錄成 .m4a，存在歷史紀錄旁邊（不是「文件」，不會被 iCloud 同步）。
+    var recordAudio = true
     var sidebarVisible = false
     var arbiter = ArbiterTuning()
+    /// 多開一條目標語言的辨識通道當「吸收用」：有人講目標語言時由它贏得仲裁並丟掉。
+    /// 預設關：只辨識各欄選的語言，不會因為吸收通道誤判而丟句子。
+    var listenTarget = false
+    /// 辨識詞彙表（一行一個），餵給 SpeechAnalyzer 的 contextualStrings。
+    var vocabulary = ""
+    /// 繁體中文譯文自動換成台灣用語。
+    var taiwanWording = true
+    /// 使用者自訂的替換規則，一行「原詞=替換」。
+    var wordingRules = ""
+
+    /// 詞彙表拆成陣列：去空白、去重、最多 500 條（辨識器的提示不是越多越好）。
+    var vocabularyTerms: [String] {
+        var seen = Set<String>()
+        return vocabulary.split(whereSeparator: { $0.isNewline })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+            .prefix(500).map { $0 }
+    }
 
     init() {}
 
@@ -203,13 +200,16 @@ struct AppSettingsData: Codable, Equatable {
         targetLanguage = try c.decodeIfPresent(String.self, forKey: .targetLanguage) ?? d.targetLanguage
         paneLanguages = try c.decodeIfPresent([String].self, forKey: .paneLanguages) ?? d.paneLanguages
         source = try c.decodeIfPresent(AudioSourceKind.self, forKey: .source) ?? d.source
-        backend = try c.decodeIfPresent(TranslationBackendKind.self, forKey: .backend) ?? d.backend
-        llm = try c.decodeIfPresent(LLMConfig.self, forKey: .llm) ?? d.llm
         fontSize = try c.decodeIfPresent(Double.self, forKey: .fontSize) ?? d.fontSize
         translateDrafts = try c.decodeIfPresent(Bool.self, forKey: .translateDrafts) ?? d.translateDrafts
         saveTranscript = try c.decodeIfPresent(Bool.self, forKey: .saveTranscript) ?? d.saveTranscript
+        recordAudio = try c.decodeIfPresent(Bool.self, forKey: .recordAudio) ?? d.recordAudio
         sidebarVisible = try c.decodeIfPresent(Bool.self, forKey: .sidebarVisible) ?? d.sidebarVisible
         arbiter = try c.decodeIfPresent(ArbiterTuning.self, forKey: .arbiter) ?? d.arbiter
+        listenTarget = try c.decodeIfPresent(Bool.self, forKey: .listenTarget) ?? d.listenTarget
+        vocabulary = try c.decodeIfPresent(String.self, forKey: .vocabulary) ?? d.vocabulary
+        taiwanWording = try c.decodeIfPresent(Bool.self, forKey: .taiwanWording) ?? d.taiwanWording
+        wordingRules = try c.decodeIfPresent(String.self, forKey: .wordingRules) ?? d.wordingRules
     }
 }
 
@@ -257,12 +257,9 @@ final class AppSettings: ObservableObject {
 }
 
 enum LanguageMap {
-    private static let zhTW = Locale(identifier: "zh_TW")
-
     static func displayName(forSpeechLocale id: String) -> String {
         if let l = LanguageCatalog.all.first(where: { $0.speechLocale == id }) { return l.name }
-        let loc = L10n.language == .en ? Locale(identifier: "en_US") : zhTW
-        return loc.localizedString(forIdentifier: id) ?? id
+        return Locale(identifier: L10n.language.localeIdentifier).localizedString(forIdentifier: id) ?? id
     }
 
     static func displayName(forTarget code: String) -> String {
@@ -277,22 +274,6 @@ enum LanguageMap {
         if l.hasPrefix("zh") { return "zh-Hans" }
         if l.hasPrefix("pt-BR") { return "pt-BR" }
         return String(l.prefix(2))
-    }
-
-    static func englishName(_ code: String) -> String {
-        switch code {
-        case "zh-Hant": return "Traditional Chinese (繁體中文, Taiwan usage)"
-        case "zh-Hans": return "Simplified Chinese"
-        case "en": return "English"
-        case "ja": return "Japanese"
-        case "ko": return "Korean"
-        case "fr": return "French"
-        case "de": return "German"
-        case "es": return "Spanish"
-        case "pt-BR": return "Brazilian Portuguese"
-        case "it": return "Italian"
-        default: return Locale(identifier: "en").localizedString(forLanguageCode: code) ?? code
-        }
     }
 }
 

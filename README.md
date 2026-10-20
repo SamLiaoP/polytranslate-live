@@ -37,7 +37,9 @@
 - **Live drafts.** While someone is still talking you see a gray draft and a draft translation; it turns solid when the sentence ends.
 - **Mixed input without mixing audio.** System audio and microphone each get their own recognizers; lines are tagged with a speaker or mic icon.
 - **History sidebar.** Every session is saved when you press Stop; browse, copy as text, or delete from the collapsible sidebar. Optionally also save a Markdown transcript to Documents › PolyTranslate Live (off by default; enable in Settings).
-- **Interface in English or Traditional Chinese.** Language names show as *native name (name in your UI language)*, e.g. `日本語 (Japanese)`.
+- **Interface in English, Traditional Chinese, Japanese or Korean.** Language names show as *native name (name in your UI language)*, e.g. `日本語 (Japanese)`.
+- **Vocabulary and wording.** Settings › Recognition takes a list of names and jargon the recognizer should prefer (fed to SpeechAnalyzer as contextual strings). Settings › Chinese wording converts Traditional Chinese translations to Taiwan terms (built-in OpenCC table plus your own rules). By default only the languages of your panes are recognized; turn on “Someone will speak the target language” to add a recognizer that drops sentences spoken in the target language.
+- **Full audio recording.** Every session is also recorded (AAC, 16 kHz mono, about 15 MB per hour) and kept with its history entry. Open a past session and press **Save recording…** to export the .m4a. Turn it off in Settings › Recording.
 
 ### Speed (measured on Apple Silicon)
 
@@ -50,10 +52,20 @@
 
 ### Install
 
+**Easiest: clone, then double-click.**
+
+```bash
+git clone https://github.com/SamLiaoP/polytranslate-live.git
+```
+
+Open the `polytranslate-live` folder in Finder and double-click **`Install.command`**. Terminal opens and the script checks your Mac (Apple Silicon, macOS 26.4+), installs the Xcode Command Line Tools if they are missing (no Xcode needed), builds the app, puts it in `/Applications` and launches it. Double-click it again later to update. If you downloaded the repo as a ZIP instead of cloning, right-click `Install.command` and choose Open the first time, because macOS quarantines downloaded files.
+
+**From Terminal instead:**
+
 ```bash
 git clone https://github.com/SamLiaoP/polytranslate-live.git
 cd polytranslate-live
-./build.sh install   # compiles with swiftc, ad-hoc signs, installs to ~/Applications/PolyTranslate Live.app
+./build.sh install   # compiles with swiftc, ad-hoc signs, installs to /Applications/PolyTranslate Live.app
 ```
 
 The app then shows up in Launchpad, Spotlight and Finder › Applications like any other app.
@@ -74,7 +86,7 @@ On first **Start**, macOS asks for two permissions:
 1. **Microphone**.
 2. **Screen & System Audio Recording** — needed to capture system audio. After enabling it in System Settings › Privacy & Security, **quit and relaunch the app**.
 
-> The app is ad-hoc signed. After each rebuild macOS may treat it as a new app and ask for Screen Recording again. To avoid that, create a self-signed certificate in Keychain Access and replace `codesign -s -` in `build.sh` with `-s "Your Cert Name"`.
+> The app is ad-hoc signed by default, so after each rebuild macOS no longer matches the old Screen & System Audio Recording grant: the switch in System Settings still shows on, but capture fails. Remove the app with “−” in that list, relaunch, and allow again. To stop this happening, run `tools/make_cert.sh` once: it creates a self-signed certificate “PolyTranslate Live Dev” and `build.sh` signs with it from then on, so the grant survives rebuilds.
 
 ### Faster translation: install offline language packs
 
@@ -84,7 +96,7 @@ System Settings › General › Language & Region › **Translation Languages** 
 
 ```bash
 say -v Samantha -o /tmp/en.wav --data-format=LEI16@16000 "Good morning everyone."
-~/Applications/PolyTranslate\ Live.app/Contents/MacOS/PolyTranslateLive --test-wav /tmp/en.wav
+/Applications/PolyTranslate\ Live.app/Contents/MacOS/PolyTranslateLive --test-wav /tmp/en.wav
 ```
 
 Feeds the file into the system-audio channel in real time, starts automatically and stops at the end. Log: `~/Library/Logs/PolyTranslateLive.log`.
@@ -112,16 +124,18 @@ Sources/
   PaneEngine.swift        one pane: receives finals/drafts, translation queue, draft throttling
   SpeechChannel.swift     SpeechAnalyzer wrapper (16 kHz float in → draft/final out)
   AudioCapture.swift      ScreenCaptureKit / AVAudioEngine capture, resampling, AudioHub fan-out
-  Translator.swift        AppleTranslator (lowLatency → highFidelity fallback), optional LLM backend, TranslatorHub
+  Translator.swift        AppleTranslator (lowLatency → highFidelity fallback), TranslatorHub
   History.swift           session records (JSON in ~/Library/Application Support/PolyTranslateLive/history)
+  TaiwanWording.swift     Taiwan wording table for zh-Hant translations (OpenCC data, Apache-2.0: third_party/OpenCC-LICENSE.txt)
+  SessionRecorder.swift   records each session to .m4a from the AudioHub (mixed source: FIFO per capture, summed on a fixed tick)
   ContentView.swift       SwiftUI interface
-  L10n.swift              string table (English / Traditional Chinese)
+  L10n.swift              string table (English / Traditional Chinese / Japanese / Korean)
   Models.swift            settings, language catalog, data types
   DebugLog.swift          file logger (events only; --verbose adds recognized text)
 tests/main.swift          unit tests for ScriptDetector / Arbiter (./build.sh test)
 Resources/Info.plist      permission strings, bundle info
 Resources/AppIcon.icns    generated by tools/make_icon.swift (no SF Symbols)
-build.sh                  swiftc → .app bundle → ad-hoc codesign → install to ~/Applications
+build.sh                  swiftc → .app bundle → ad-hoc codesign → install to /Applications
 AGENTS.md / CLAUDE.md     instructions for AI coding assistants
 ```
 
@@ -167,7 +181,9 @@ Written from scratch in Swift. Ideas and API usage patterns were learned from th
 - **即時草稿。** 對方還在講時先看到灰色草稿和草稿翻譯，說完一句就定稿。
 - **混合輸入不混音。** 系統聲音和麥克風各有自己的辨識器，字幕前標記喇叭或麥克風圖示。
 - **歷史紀錄側欄。** 每次按停止就存一筆，左側可收納的列表能回看、複製成文字、刪除。也可以在設定裡打開「停止時存逐字稿」，另存一份 Markdown 到「文件 › PolyTranslate Live」（預設關閉）。
-- **介面英文 / 繁體中文。** 語言名稱顯示成「原生名稱（介面語言的翻譯）」，例如 `English（英文）`、`日本語（日文）`。
+- **介面可選英文、繁體中文、日文、韓文。** 語言名稱顯示成「原生名稱（介面語言的翻譯）」，例如 `English（英文）`、`日本語（日文）`。
+- **詞彙表與用語。** 「設定 › 辨識」可以填人名、專有名詞讓辨識器偏向這些拼法（餵給 SpeechAnalyzer 的 contextual strings）。「設定 › 中文用語」會把繁體中文譯文換成台灣用語（內建 OpenCC 對照表，可加自訂規則）。預設只辨識各欄選的語言；有人會講目標語言時再打開「有人會講目標語言」，多開一條辨識把那些句子略過。
+- **完整錄音。** 每場翻譯同時錄成 AAC（16 kHz 單聲道，每小時約 15 MB），和歷史紀錄放在一起。打開過去的紀錄按「儲存錄音…」就能匯出 .m4a；不想錄可以在「設定 › 錄音」關掉。
 
 ![設定](docs/screenshots/settings-zh.png)
 
@@ -182,10 +198,20 @@ Written from scratch in Swift. Ideas and API usage patterns were learned from th
 
 ### 安裝
 
+**最簡單：clone 下來，點兩下。**
+
+```bash
+git clone https://github.com/SamLiaoP/polytranslate-live.git
+```
+
+用 Finder 打開 `polytranslate-live` 資料夾，點兩下 **`Install.command`**。Terminal 會自動開起來檢查機器（Apple Silicon、macOS 26.4 以上）、沒有 Xcode Command Line Tools 就幫你叫出安裝視窗（不用裝 Xcode）、編譯、裝進「應用程式」然後打開 App。之後要更新，再點一次就好。如果你是從 GitHub 下載 ZIP 而不是 clone，第一次請對 `Install.command` 按右鍵選「打開」，因為 macOS 會隔離下載的檔案。
+
+**想用 Terminal 的話：**
+
 ```bash
 git clone https://github.com/SamLiaoP/polytranslate-live.git
 cd polytranslate-live
-./build.sh install   # swiftc 編譯 → ad-hoc 簽名 → 安裝到 ~/Applications/PolyTranslate Live.app
+./build.sh install   # swiftc 編譯 → ad-hoc 簽名 → 安裝到 /Applications/PolyTranslate Live.app
 ```
 
 裝好後 Launchpad、Spotlight、Finder › 應用程式 都找得到，和一般 App 一樣。
@@ -203,7 +229,7 @@ repo 裡附了 [`AGENTS.md`](AGENTS.md)，寫明系統需求、指令、權限�
 1. **麥克風**。
 2. **螢幕與系統音訊錄製**：擷取系統聲音要用。到 系統設定 › 隱私權與安全性 開啟後，**完全結束 App 再重開**。
 
-> App 是 ad-hoc 簽名，每次重新 `build.sh` 後 macOS 可能把它當成新 App，要再授權一次螢幕錄製。想避免的話，在鑰匙圈存取建立一張自簽憑證，把 `build.sh` 的 `codesign -s -` 改成 `-s "憑證名稱"`。
+> App 預設是 ad-hoc 簽名，每次重新 `build.sh` 後 macOS 認不得舊的「螢幕與系統錄音」授權：系統設定裡開關還是開的，但擷取會失敗。到那個清單用「−」移除 App，重新啟動再允許一次即可。想一勞永逸，跑一次 `tools/make_cert.sh`：它會建一張自簽憑證「PolyTranslate Live Dev」，之後 `build.sh` 都用它簽名，授權就會跨重建保留。
 
 ### 讓翻譯更快：安裝離線語言包
 
@@ -213,7 +239,7 @@ repo 裡附了 [`AGENTS.md`](AGENTS.md)，寫明系統需求、指令、權限�
 
 ```bash
 say -v Samantha -o /tmp/en.wav --data-format=LEI16@16000 "Good morning everyone."
-~/Applications/PolyTranslate\ Live.app/Contents/MacOS/PolyTranslateLive --test-wav /tmp/en.wav
+/Applications/PolyTranslate\ Live.app/Contents/MacOS/PolyTranslateLive --test-wav /tmp/en.wav
 ```
 
 會把 wav 以真實時間速度灌進「系統聲音」通道，自動開始、播完自動停止。日誌在 `~/Library/Logs/PolyTranslateLive.log`。

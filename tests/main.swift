@@ -1,6 +1,8 @@
 // 純邏輯的單元測試：ScriptDetector、Arbiter、LanguageMap。
 // 不用 XCTest（Command Line Tools 不一定有），一個小的斷言框架就夠。
 //   ./build.sh test
+import Accelerate
+import AVFoundation
 import CoreMedia
 import Foundation
 
@@ -155,6 +157,79 @@ MainActor.assumeIsolated {
         check(a.shouldShowDraft(from: 0, text: "Good morning everyone", confidence: -1), "英文通道英文草稿 → 顯示")
         check(a.shouldShowDraft(from: 1, text: "早", confidence: -1), "太短不檢查文字系統 → 顯示")
     }
+}
+
+// ---- TaiwanWording：OpenCC 表 + 自訂規則 ----
+do {
+    checkEqual(TaiwanWording.apply("這個軟件的默認值在服務器上"), "這個軟體的預設值在伺服器上", "OpenCC 詞彙")
+    checkEqual(TaiwanWording.apply("我的膝上型電腦和賬號"), "我的筆記型電腦和帳號", "extra 規則")
+    checkEqual(TaiwanWording.apply("臺灣的平臺"), "台灣的平台", "臺→台")
+    checkEqual(TaiwanWording.apply("視頻會議"), "視訊會議", "長詞優先（視頻會議→視訊會議，不是 影片會議）")
+    let rules = TaiwanWording.parseRules("馬克=Mark\n  渠道 = 管道 \n壞行\n=空")
+    checkEqual(rules.count, 2, "parseRules 只收合法行")
+    checkEqual(TaiwanWording.apply("馬克用渠道", custom: rules), "Mark用管道", "自訂規則優先於內建")
+    checkEqual(TaiwanWording.apply("Hello world"), "Hello world", "英文不動")
+    var d = AppSettingsData()
+    d.vocabulary = " OpenAI \nCodex\n\nOpenAI\nCathay"
+    checkEqual(d.vocabularyTerms, ["OpenAI", "Codex", "Cathay"], "詞彙表去空白去重")
+}
+
+// ---- SessionRecorder：兩路 inject 一秒，應寫出約一秒的 .m4a ----
+do {
+    let hub = AudioHub()
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("rec-test-\(UUID().uuidString).m4a")
+    let rec = SessionRecorder(url: url)
+    var started = false
+    do { try rec.start(hub: hub, kinds: [.system, .microphone]); started = true }
+    catch { check(false, "recorder start: \(error.localizedDescription)") }
+    if started {
+        let tone = (0..<1_600).map { Float(sin(Double($0) * 2 * .pi * 440 / 16_000)) * 0.5 }
+        for _ in 0..<10 {
+            hub.inject(.system, tone)
+            hub.inject(.microphone, [Float](repeating: 0, count: 1_600))
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        let done = DispatchSemaphore(value: 0)
+        var seconds = 0.0
+        Task { seconds = (await rec.stop()).seconds; done.signal() }
+        done.wait()
+        check(seconds >= 0.9 && seconds <= 1.6, "錄音長度約一秒（\(seconds)）")
+        if let f = try? AVAudioFile(forReading: url) {
+            check(f.length >= 14_000, "m4a 可讀且長度合理（\(f.length) frames）")
+            checkEqual(Int(f.fileFormat.sampleRate), 16_000, "m4a 取樣率")
+            // 讀回來應該有聲音（系統那一路是 440 Hz 正弦波）
+            if let buf = AVAudioPCMBuffer(pcmFormat: f.processingFormat, frameCapacity: AVAudioFrameCount(f.length)),
+               (try? f.read(into: buf)) != nil, let ch = buf.floatChannelData?[0] {
+                var peak: Float = 0
+                vDSP_maxmgv(ch, 1, &peak, vDSP_Length(buf.frameLength))
+                check(peak > 0.3, "錄音內容不是靜音（peak \(peak)）")
+            } else {
+                check(false, "m4a 讀回失敗")
+            }
+        } else {
+            check(false, "m4a 無法開啟")
+        }
+        try? FileManager.default.removeItem(at: url)
+    }
+}
+
+// ---- L10n：四種介面語言都要有字串，缺的會退回英文 ----
+do {
+    checkEqual(L10n.incompleteKeys(), [], "每個 key 都有四種語言")
+    let saved = L10n.language
+    defer { L10n.language = saved }
+    L10n.language = .ja
+    checkEqual(tr("start"), "開始", "ja start")
+    checkEqual(tr("history"), "履歴", "ja history")
+    checkEqual(trf("history.lines", 3), "3 文", "ja format")
+    L10n.language = .ko
+    checkEqual(tr("start"), "시작", "ko start")
+    checkEqual(trf("pane.add.max", 4), "최대 4개 패널", "ko format")
+    checkEqual(tr("no.such.key"), "no.such.key", "未知 key 回傳 key")
+    L10n.language = .en
+    checkEqual(tr("start"), "Start", "en start")
+    checkEqual(UILanguage.ja.localeIdentifier, "ja_JP", "ja locale")
+    checkEqual(UILanguage.ko.localeIdentifier, "ko_KR", "ko locale")
 }
 
 print(failures == 0 ? "✓ \(total) checks passed" : "✗ \(failures)/\(total) checks failed")

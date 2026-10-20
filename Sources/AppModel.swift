@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import Foundation
 import Speech
+import UniformTypeIdentifiers
 
 /// 整個 App 的狀態：設定、音訊來源、辨識引擎、N 個字幕欄。
 /// 所有字幕欄共用一個目標語言；每欄聽一種語言。
@@ -17,6 +18,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var isStarting = false
     @Published private(set) var startedAt: Date?
+    /// 這場 session 有沒有在錄音（設定開著且錄音器成功啟動）。
+    @Published private(set) var isRecording = false
     @Published var globalError: String?
     @Published private(set) var supportedSpeechLocales: Set<String> = []
     @Published var showSettings = false
@@ -35,6 +38,9 @@ final class AppModel: ObservableObject {
         return URL(fileURLWithPath: args[i + 1])
     }()
     private var testFeedTask: Task<Void, Never>?
+    private var recorder: SessionRecorder?
+    /// 開始時就決定這場的 id，錄音檔才能和之後存的 JSON 同名。
+    private var sessionID = UUID()
     /// 引擎 slot → 字幕欄。沒有對應的 slot 是「吸收用」的目標語言通道，結果丟掉。
     private var slotToPane: [Int: PaneEngine] = [:]
     private var paneSeq = 0
@@ -42,7 +48,6 @@ final class AppModel: ObservableObject {
     init() {
         let settings = AppSettings()
         self.settings = settings
-        settings.data.backend = .apple
         let translator = TranslatorHub(settings: settings)
         self.translator = translator
 
@@ -168,8 +173,8 @@ final class AppModel: ObservableObject {
         // 先不清上一輪的字幕：權限被拒或引擎起不來的話，使用者不該平白失去畫面上的內容。
         for pane in panes { pane.sessionStarted() }
 
-        // 辨識語言 = 各欄的語言，再加上目標語言當「吸收通道」：
-        // 有人說目標語言時，由它贏得仲裁並被丟掉，不會變成別欄的亂碼。
+        // 辨識語言 = 各欄的語言；設定開了才再加目標語言當「吸收通道」：
+        // 有人說目標語言時，由它贏得仲裁並被丟掉，不會變成別欄的亂碼（代價是偶爾誤丟一句）。
         var languages: [Language] = []
         slotToPane.removeAll()
         for pane in panes {
@@ -180,7 +185,7 @@ final class AppModel: ObservableObject {
                 languages.append(pane.language)
             }
         }
-        if !languages.contains(where: { $0.speechLocale == target.speechLocale }) {
+        if settings.data.listenTarget, !languages.contains(where: { $0.speechLocale == target.speechLocale }) {
             languages.append(target)
         }
 
@@ -199,11 +204,12 @@ final class AppModel: ObservableObject {
                 return
             }
         }
-        dlog("audio sources started: \(captures.map(\.rawValue)), languages: \(languages.map(\.speechLocale)), target: \(target.speechLocale)")
+        dlog("audio sources started: \(captures.map(\.rawValue)), languages: \(languages.map(\.speechLocale)), target: \(target.speechLocale), vocabulary: \(settings.data.vocabularyTerms.count) terms")
 
         do {
             let settings = self.settings
             try await engine.start(languages: languages, captures: captures, hub: hub,
+                                   vocabulary: settings.data.vocabularyTerms,
                                    tuning: { settings.data.arbiter })
         } catch {
             dlog("engine start failed: \(error.localizedDescription)")
@@ -214,8 +220,24 @@ final class AppModel: ObservableObject {
             return
         }
         for pane in panes { pane.clear() }
+        sessionID = UUID()
+        if settings.data.recordAudio { startRecording(captures: captures) }
         startedAt = Date()
         isRunning = true
+    }
+
+    /// 錄音起不來不該讓整場翻譯跟著失敗：只顯示錯誤，session 照常進行。
+    private func startRecording(captures: [CaptureKind]) {
+        let rec = SessionRecorder(url: history.recordingURL(id: sessionID))
+        do {
+            try rec.start(hub: hub, kinds: captures)
+            recorder = rec
+            isRecording = true
+        } catch {
+            dlog("recording start failed: \(error.localizedDescription)")
+            try? FileManager.default.removeItem(at: rec.url)
+            globalError = trf("err.recordingStart", error.localizedDescription)
+        }
     }
 
     func stop() async {
@@ -228,6 +250,9 @@ final class AppModel: ObservableObject {
         guard isRunning else { return }
         testFeedTask?.cancel()
         await engine.stop(hub: hub)      // 這裡會把最後一句定稿送進各欄
+        let recorded = await recorder?.stop()
+        recorder = nil
+        isRecording = false
         await hub.stopAll()
         for pane in panes { pane.sessionStopped() }
         isRunning = false
@@ -238,13 +263,23 @@ final class AppModel: ObservableObject {
         }
         let started = startedAt ?? Date()
         startedAt = nil
+        // 按錯馬上停、又沒有任何字幕的幾秒錄音不值得留。
+        var recordingName: String?
+        if let recorded {
+            if recorded.seconds >= 3 || panes.contains(where: { !$0.lines.isEmpty }) {
+                recordingName = recorded.url.lastPathComponent
+            } else {
+                try? FileManager.default.removeItem(at: recorded.url)
+            }
+        }
         let record = SessionRecord(
-            id: UUID(), startedAt: started, endedAt: Date(), source: settings.data.source, target: target,
+            id: sessionID, startedAt: started, endedAt: Date(), source: settings.data.source, target: target,
             panes: panes.map { p in
                 SessionRecord.Pane(language: p.language, target: p.target,
                                    lines: p.lines.map { SessionRecord.Line(id: $0.id, time: $0.timestamp, original: $0.original,
                                                                             translated: $0.translated, source: $0.source) })
-            })
+            },
+            recording: recordingName)
         history.save(record)
         if settings.data.saveTranscript, record.lineCount > 0 { saveTranscript(record) }
     }
@@ -260,8 +295,41 @@ final class AppModel: ObservableObject {
         if selectedSession?.id == record.id { selectedSession = nil }
     }
 
+    private static let fileNameFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH-mm-ss"   // 到秒，同一分鐘停兩次不會互相覆蓋
+        return f
+    }()
+
+    /// 「儲存錄音…」：把歷史資料夾裡的 .m4a 複製到使用者選的位置。
+    func saveRecording(_ record: SessionRecord) {
+        guard let src = history.recordingURL(for: record) else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.mpeg4Audio]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "PolyTranslate Live \(Self.fileNameFormatter.string(from: record.startedAt)).m4a"
+        panel.begin { [weak self] response in
+            guard response == .OK, let dst = panel.url else { return }
+            do {
+                if FileManager.default.fileExists(atPath: dst.path) { try FileManager.default.removeItem(at: dst) }
+                try FileManager.default.copyItem(at: src, to: dst)
+                dlog("recording exported")
+            } catch {
+                dlog("recording export failed: \(error.localizedDescription)")
+                Task { @MainActor in self?.globalError = trf("err.recordingSave", error.localizedDescription) }
+            }
+        }
+    }
+
+    func revealRecording(_ record: SessionRecord) {
+        guard let url = history.recordingURL(for: record) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
     private func startTestFeed(_ url: URL) {
         let hub = self.hub
+        // 灌進目前來源的第一個擷取通道（系統聲音或麥克風），不然設定是麥克風時什麼都辨識不到。
+        let kind = settings.data.source.captures[0]
         testFeedTask = Task.detached {
             guard let file = try? AVAudioFile(forReading: url) else { dlog("TEST MODE: cannot open wav"); return }
             let fmt = file.processingFormat
@@ -273,13 +341,13 @@ final class AppModel: ObservableObject {
                   let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: chunk) {
                 do { try file.read(into: buf) } catch { break }
                 guard buf.frameLength > 0 else { break }
-                if let s = resampler.process(buf) { hub.inject(.system, s) }
+                if let s = resampler.process(buf) { hub.inject(kind, s) }
                 fed += Double(buf.frameLength) / fmt.sampleRate
                 let wait = start.addingTimeInterval(fed).timeIntervalSinceNow
                 if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
             }
             for _ in 0..<30 where !Task.isCancelled {
-                hub.inject(.system, [Float](repeating: 0, count: 1_600))
+                hub.inject(kind, [Float](repeating: 0, count: 1_600))
                 try? await Task.sleep(for: .milliseconds(100))
             }
             dlog("TEST MODE: wav finished (\(String(format: "%.1f", fed))s); stopping")
@@ -292,8 +360,7 @@ final class AppModel: ObservableObject {
     }
 
     private func saveTranscript(_ record: SessionRecord) {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd HH-mm-ss"   // 到秒，同一分鐘停兩次不會互相覆蓋
+        let f = Self.fileNameFormatter
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent(tr("transcript.folder"), isDirectory: true)
         let url = dir.appendingPathComponent("\(f.string(from: record.startedAt)).md")

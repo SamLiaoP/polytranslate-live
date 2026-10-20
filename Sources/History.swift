@@ -21,15 +21,17 @@ struct SessionRecord: Identifiable, Codable, Equatable {
     var source: AudioSourceKind
     var target: Language
     var panes: [Pane]
+    /// 同資料夾裡的錄音檔名（.m4a）；沒開錄音或舊紀錄就是 nil。
+    var recording: String? = nil
 
     var duration: TimeInterval { endedAt.timeIntervalSince(startedAt) }
     var lineCount: Int { panes.reduce(0) { $0 + $1.lines.count } }
-    /// DateFormatter 很貴，側欄每一列每次重繪都 new 一個會卡；兩種介面語言各快取一個。
+    /// DateFormatter 很貴，側欄每一列每次重繪都 new 一個會卡；每種介面語言各快取一個。
     private static let titleFormatters: [UILanguage: DateFormatter] = {
         var d: [UILanguage: DateFormatter] = [:]
         for ui in UILanguage.allCases {
             let f = DateFormatter()
-            f.locale = Locale(identifier: ui == .en ? "en_US" : "zh_TW")
+            f.locale = Locale(identifier: ui.localeIdentifier)
             f.dateStyle = .medium
             f.timeStyle = .short
             d[ui] = f
@@ -84,6 +86,14 @@ final class HistoryStore: ObservableObject {
     }
 
     private func url(for id: UUID) -> URL { dir.appendingPathComponent("\(id.uuidString).json") }
+    /// 這場 session 的錄音要寫到哪裡（和 JSON 同名不同副檔名）。
+    func recordingURL(id: UUID) -> URL { dir.appendingPathComponent("\(id.uuidString).m4a") }
+    /// 有錄音檔才回傳；紀錄裡有檔名但檔案被手動刪掉也算沒有。
+    func recordingURL(for record: SessionRecord) -> URL? {
+        guard let name = record.recording else { return nil }
+        let url = dir.appendingPathComponent(name)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
 
     /// 在背景讀檔，不卡啟動；幾百場會議的 JSON 在主執行緒同步讀會讓視窗晚出來。
     func load() {
@@ -105,7 +115,7 @@ final class HistoryStore: ObservableObject {
     }
 
     func save(_ record: SessionRecord) {
-        guard record.lineCount > 0 else { return }
+        guard record.lineCount > 0 || record.recording != nil else { return }
         do {
             try encoder.encode(record).write(to: url(for: record.id), options: .atomic)
             sessions.removeAll { $0.id == record.id }
@@ -119,6 +129,10 @@ final class HistoryStore: ObservableObject {
     func delete(_ record: SessionRecord) {
         do { try FileManager.default.removeItem(at: url(for: record.id)) }
         catch { dlog("history delete failed: \(error.localizedDescription)") }
+        if let rec = recordingURL(for: record) {
+            do { try FileManager.default.removeItem(at: rec) }
+            catch { dlog("recording delete failed: \(error.localizedDescription)") }
+        }
         sessions.removeAll { $0.id == record.id }
     }
 
