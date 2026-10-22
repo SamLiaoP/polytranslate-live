@@ -66,6 +66,7 @@ enum L10n {
         "start.help": ["Start (⌘ Space)", "開始（⌘空白鍵）", "開始（⌘スペース）", "시작 (⌘ Space)"],
         "stop.help": ["Stop (⌘ Space)", "停止（⌘空白鍵）", "停止（⌘スペース）", "정지 (⌘ Space)"],
         "settings": ["Settings", "設定", "設定", "설정"],
+        "options": ["Options", "選項", "オプション", "옵션"],
         "translate.to": ["Translate to", "翻譯成", "翻訳先", "번역 언어"],
         "audio.source": ["Audio source", "聲音來源", "音声ソース", "오디오 소스"],
         "pane.add": ["Add language pane", "新增語言欄", "言語パネルを追加", "언어 패널 추가"],

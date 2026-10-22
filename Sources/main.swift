@@ -19,12 +19,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         win.titleVisibility = .hidden
         win.isMovableByWindowBackground = true
         win.backgroundColor = NSColor(calibratedRed: 0.07, green: 0.075, blue: 0.095, alpha: 1)
-        win.minSize = NSSize(width: 760, height: 480)
+        win.minSize = NSSize(width: 360, height: 240)   // 四分之一螢幕也放得下，介面會跟著縮
         win.contentView = NSHostingView(rootView: ContentView(settings: model.settings).environmentObject(model))
         win.center()
-        win.setFrameAutosaveName("PolyTranslateLive.Main")
-        win.makeKeyAndOrderFront(nil)
         window = win
+        if !snapshotIfRequested() {
+            win.setFrameAutosaveName("PolyTranslateLive.Main")
+        }
+        win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
         // 介面語言改變時重建選單與視窗標題。
@@ -38,6 +40,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    /// `--snapshot 640x400 /path/out.png`：開指定大小的視窗、塞幾句範例字幕、兩秒後存成 PNG 結束。
+    /// 給沒有螢幕錄製權限的終端機（或 AI 助理）檢查各種視窗大小的版面用。不會動到使用者存的視窗位置。
+    private func snapshotIfRequested() -> Bool {
+        let args = CommandLine.arguments
+        guard let i = args.firstIndex(of: "--snapshot"), i + 2 < args.count, let win = window else { return false }
+        let dims = args[i + 1].split(separator: "x").compactMap { Double($0) }
+        guard dims.count == 2 else { return false }
+        let out = URL(fileURLWithPath: args[i + 2])
+        win.setContentSize(NSSize(width: dims[0], height: dims[1]))
+        win.center()
+        let samples = ["Good morning everyone, today we review the quarterly results.",
+                       "The deployment practitioner course is more like a guideline than a technical manual."]
+        for pane in model.panes {
+            pane.sessionStarted()
+            for s in samples { pane.receiveFinal(s, from: .system) }
+            pane.receiveDraft("So what I'm going to do is share the presentation", from: .system)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            guard let self, let view = self.window?.contentView,
+                  let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { exit(2) }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            if let data = rep.representation(using: .png, properties: [:]) { try? data.write(to: out) }
+            dlog("snapshot saved: \(out.path)")
+            exit(0)
+        }
+        return true
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
         model.settings.flush()

@@ -1,6 +1,7 @@
 #!/bin/bash
 # PolyTranslate Live 一鍵安裝／更新：在 Finder 點兩下這個檔案即可。
 # 做的事：檢查機器與 Command Line Tools → （repo 有新版就 git pull）→ ./build.sh install → 打開 App。
+# 不會要使用者的密碼，不碰鑰匙圈。
 # 再點一次就是更新。POLY_DRY_RUN=1 只做檢查不編譯（測試用）。
 set -u
 cd "$(dirname "$0")" || exit 1
@@ -37,15 +38,12 @@ fi
 
 if [ "${POLY_DRY_RUN:-0}" = "1" ]; then say_ "（dry run，略過編譯）"; exit 0; fi
 
-# 4. 簽名憑證：有的話之後更新不必重新授權「螢幕與系統錄音」。第一次會問一次要不要建（要輸入系統密碼）。
-if ! security find-identity -v -p codesigning 2>/dev/null | grep -q '"PolyTranslate Live Dev"'; then
-  if [ -t 0 ]; then
-    printf "\n要建立本機簽名憑證嗎？建了之後更新 App 不必重新授權系統錄音，過程會要一次系統密碼。[Y/n] "
-    printf "\nCreate a local signing certificate so updates keep their permissions? Asks for your password once. [Y/n] "
-    read -r ans
-    case "${ans:-Y}" in [Nn]*) ;; *) bash tools/make_cert.sh || say_ "憑證沒建成，先用 ad-hoc 簽名繼續。 / Certificate skipped; continuing with ad-hoc signing." ;; esac
-  fi
-fi
+# 4. 簽名：一般使用者用 ad-hoc，不碰鑰匙圈、不要密碼。代價是每次更新後 macOS 會把它當新 App，
+#    「螢幕與系統錄音」要再允許一次；下面第 6 步會先把舊授權清掉，讓系統直接重新詢問，不會卡在「開著但沒作用」。
+#    開發者想讓授權跨更新保留，可以自己跑 tools/make_cert.sh（會要一次系統密碼）。
+APP="/Applications/PolyTranslate Live.app"
+[ -d "$APP" ] || APP="$HOME/Applications/PolyTranslate Live.app"
+WAS_INSTALLED=0; [ -d "$APP" ] && WAS_INSTALLED=1
 
 # 5. 編譯並安裝
 say_ "→ 編譯並安裝（第一次約 1 分鐘）/ Building and installing"
@@ -53,12 +51,21 @@ if ! ./build.sh install; then
   die "編譯失敗。把上面的訊息貼給開發者。 / Build failed; please send the output above to the developer."
 fi
 
-# 6. 打開
+# 6. 更新時清掉舊的系統錄音授權（只針對這個 App，不需要密碼），macOS 會在下次按「開始」時重新詢問。
 APP="/Applications/PolyTranslate Live.app"
 [ -d "$APP" ] || APP="$HOME/Applications/PolyTranslate Live.app"
+if [ "$WAS_INSTALLED" = "1" ] && ! security find-identity -v -p codesigning 2>/dev/null | grep -q '"PolyTranslate Live Dev"'; then
+  tccutil reset ScreenCapture dev.samliao.polytranslatelive >/dev/null 2>&1 || true
+  tccutil reset AudioCapture dev.samliao.polytranslatelive >/dev/null 2>&1 || true
+  say_ "已更新。因為 App 重新編譯過，下次按「開始」時 macOS 會再問一次「螢幕與系統錄音」，允許後 ⌘Q 重開即可。"
+  say_ "Updated. Because the app was rebuilt, macOS will ask for Screen & System Audio Recording once more on the next Start; allow it, then quit and relaunch."
+fi
+
+# 7. 打開
 open "$APP"
 say_ "✓ 裝好了，App 已打開。第一次按「開始」時請允許：麥克風、語音辨識、螢幕與系統錄音，然後 ⌘Q 重開一次。"
 say_ "✓ Installed and launched. On the first Start, allow Microphone, Speech Recognition and Screen & System Audio Recording, then quit and relaunch once."
+say_ "這個安裝程式不會要你的密碼；只有 macOS 自己的權限視窗會出現。 / This installer never asks for your password; only macOS's own permission dialogs appear."
 say_ "之後要更新：再點一次 Install.command。 / To update later: double-click Install.command again."
 say_ "按 Enter 關閉。 / Press Enter to close."
 read -r _

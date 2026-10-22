@@ -18,49 +18,107 @@ enum Palette {
     }
 }
 
+
+// MARK: - 版面密度：視窗縮小時整個介面跟著縮
+
+/// 依視窗大小分三級。字幕框是主體，其他東西（標題、控制列、按鈕、字級）隨等級縮小或收進選單。
+enum Density { case regular, compact, mini }
+
+struct Layout: Equatable {
+    var density: Density = .regular
+    var size = CGSize(width: 1240, height: 780)
+
+    static func classify(_ size: CGSize) -> Density {
+        if size.width < 560 || size.height < 380 { return .mini }
+        if size.width < 900 || size.height < 520 { return .compact }
+        return .regular
+    }
+
+    private func pick<T>(_ r: T, _ c: T, _ m: T) -> T {
+        switch density { case .regular: return r; case .compact: return c; case .mini: return m }
+    }
+    /// 字幕字級的倍率（乘上設定裡的字級）。
+    var fontScale: CGFloat { pick(1, 0.85, 0.7) }
+    var outerPad: CGFloat { pick(20, 12, 6) }
+    var paneGap: CGFloat { pick(16, 10, 6) }
+    var cardRadius: CGFloat { pick(18, 14, 10) }
+    var startSize: CGFloat { pick(48, 34, 26) }
+    var timerFont: CGFloat { pick(26, 17, 13) }
+    var iconButton: CGFloat { pick(34, 28, 24) }
+    var topPad: CGFloat { pick(34, 30, 26) }     // 紅綠燈佔的高度
+    var headerFont: CGFloat { pick(14, 12, 11) }
+    var panePadH: CGFloat { pick(18, 12, 8) }
+    var panePadV: CGFloat { pick(16, 10, 6) }
+    var lineGap: CGFloat { pick(18, 12, 8) }
+    var pillHeight: CGFloat { pick(30, 26, 22) }
+    /// 標題與控制列只在正常大小顯示；縮小時控制列收進頂部的選單。
+    var showTitle: Bool { density == .regular }
+    var showControlRow: Bool { density == .regular }
+    var isMini: Bool { density == .mini }
+}
+
+private struct LayoutKey: EnvironmentKey { static let defaultValue = Layout() }
+extension EnvironmentValues {
+    var layout: Layout {
+        get { self[LayoutKey.self] }
+        set { self[LayoutKey.self] = newValue }
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var settings: AppSettings
 
     var body: some View {
-        ZStack {
-            Palette.window.ignoresSafeArea()
-            RadialGradient(colors: [Palette.accentA.opacity(0.18), .clear], center: .top, startRadius: 0, endRadius: 520)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-            HStack(spacing: 0) {
-                if settings.data.sidebarVisible {
-                    HistorySidebar(settings: settings, history: model.history)
-                        .frame(width: 260)
-                        .transition(.move(edge: .leading).combined(with: .opacity))
-                    Rectangle().fill(Palette.cardStroke).frame(width: 1).ignoresSafeArea()
-                }
-                VStack(spacing: 0) {
-                    TopBar(settings: settings)
-                    if let session = model.selectedSession {
-                        HistoryDetail(record: session, settings: settings)
-                    } else {
-                        ControlRow(settings: settings)
-                        if let err = model.globalError {
-                            Banner(text: err, kind: .error, dismiss: { model.globalError = nil })
-                                .padding(.horizontal, 20)
-                                .padding(.bottom, 12)
-                        }
-                        HStack(spacing: 16) {
-                            ForEach(model.panes) { pane in
-                                PaneView(pane: pane, settings: settings)
+        GeometryReader { geo in
+            let layout = Layout(density: Layout.classify(geo.size), size: geo.size)
+            // 縮到最小時側欄自動收起，不跟字幕框搶寬度；放大回來會再出現。
+            let sidebar = settings.data.sidebarVisible && !layout.isMini
+            ZStack {
+                Palette.window.ignoresSafeArea()
+                RadialGradient(colors: [Palette.accentA.opacity(0.18), .clear], center: .top, startRadius: 0, endRadius: 520)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+                HStack(spacing: 0) {
+                    if sidebar {
+                        HistorySidebar(settings: settings, history: model.history)
+                            .frame(width: layout.density == .regular ? 260 : 200)
+                            .transition(.move(edge: .leading).combined(with: .opacity))
+                        Rectangle().fill(Palette.cardStroke).frame(width: 1).ignoresSafeArea()
+                    }
+                    VStack(spacing: 0) {
+                        TopBar(settings: settings)
+                        if let session = model.selectedSession {
+                            HistoryDetail(record: session, settings: settings)
+                        } else {
+                            if layout.showControlRow { ControlRow(settings: settings) }
+                            if let err = model.globalError {
+                                Banner(text: err, kind: .error, dismiss: { model.globalError = nil })
+                                    .padding(.horizontal, layout.outerPad)
+                                    .padding(.bottom, layout.outerPad / 2)
                             }
+                            // 每欄不到 300 pt 寬就改成上下排，字幕框才夠寬。
+                            let contentWidth = geo.size.width - (sidebar ? 261 : 0) - layout.outerPad * 2
+                            let vertical = layout.isMini || contentWidth / CGFloat(max(1, model.panes.count)) < 300
+                            let stack = vertical ? AnyLayout(VStackLayout(spacing: layout.paneGap))
+                                                 : AnyLayout(HStackLayout(spacing: layout.paneGap))
+                            stack {
+                                ForEach(model.panes) { pane in
+                                    PaneView(pane: pane, settings: settings)
+                                }
+                            }
+                            .animation(.spring(duration: 0.3), value: model.panes.count)
+                            .padding(.horizontal, layout.outerPad)
+                            .padding(.bottom, layout.outerPad)
                         }
-                        .animation(.spring(duration: 0.3), value: model.panes.count)
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 20)
                     }
                 }
+                .animation(.spring(duration: 0.3), value: sidebar)
             }
-            .animation(.spring(duration: 0.3), value: settings.data.sidebarVisible)
+            .environment(\.layout, layout)
         }
-        // 每欄最少 280 pt：四欄加側欄 1420 pt，13 吋 MacBook（1470 pt）還放得下。
-        .frame(minWidth: CGFloat(max(1, model.panes.count)) * 280 + 60 + (settings.data.sidebarVisible ? 260 : 0), minHeight: 520)
+        // 最小 360×240：縮到螢幕的四分之一也放得下，其他東西會跟著縮。
+        .frame(minWidth: 360, minHeight: 240)
         .sheet(isPresented: $model.showSettings) {
             SettingsSheet(settings: settings).environmentObject(model)
         }
@@ -190,10 +248,11 @@ private struct SidebarRow<Content: View>: View {
 
 private struct HistoryDetail: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.layout) private var layout
     let record: SessionRecord
     @ObservedObject var settings: AppSettings
 
-    private var fontSize: CGFloat { CGFloat(settings.data.fontSize) }
+    private var fontSize: CGFloat { CGFloat(settings.data.fontSize) * layout.fontScale }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -207,9 +266,11 @@ private struct HistoryDetail: View {
                     .background(Capsule().fill(Palette.pill))
                 }
                 .buttonStyle(.plain)
-                Text(record.title).font(.system(size: 14, weight: .semibold))
-                Text("\(record.source.label) · \(record.durationText) · \(trf("history.lines", record.lineCount))")
-                    .font(.system(size: 12)).foregroundStyle(.tertiary)
+                Text(record.title).font(.system(size: layout.headerFont, weight: .semibold)).lineLimit(1)
+                if layout.showTitle {
+                    Text("\(record.source.label) · \(record.durationText) · \(trf("history.lines", record.lineCount))")
+                        .font(.system(size: 12)).foregroundStyle(.tertiary)
+                }
                 Spacer()
                 Button { model.copyToPasteboard(record) } label: {
                     Label(tr("history.copy"), systemImage: "doc.on.doc").font(.system(size: 12, weight: .medium))
@@ -236,25 +297,27 @@ private struct HistoryDetail: View {
                 .help(tr("history.delete"))
                 .accessibilityLabel(tr("history.delete"))
             }
-            .padding(.horizontal, 24)
-            .padding(.bottom, 16)
+            .padding(.horizontal, layout.outerPad + 4)
+            .padding(.bottom, layout.outerPad / 2)
 
-            HStack(spacing: 16) {
+            let vertical = layout.isMini || (layout.size.width - layout.outerPad * 2) / CGFloat(max(1, record.panes.count)) < 300
+            let stack = vertical ? AnyLayout(VStackLayout(spacing: layout.paneGap)) : AnyLayout(HStackLayout(spacing: layout.paneGap))
+            stack {
                 ForEach(Array(record.panes.enumerated()), id: \.offset) { _, p in
                     VStack(alignment: .leading, spacing: 0) {
                         HStack(spacing: 8) {
-                            Text(p.language.displayName).font(.system(size: 14, weight: .semibold))
+                            Text(p.language.displayName).font(.system(size: layout.headerFont, weight: .semibold))
                             if p.language.translation != p.target.translation {
                                 Image(systemName: "arrow.right").font(.system(size: 11, weight: .bold)).foregroundStyle(.tertiary)
-                                Text(p.target.displayName).font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.translation)
+                                Text(p.target.displayName).font(.system(size: layout.headerFont, weight: .semibold)).foregroundStyle(Palette.translation)
                             }
                             Spacer()
                             Text(trf("history.lines", p.lines.count)).font(.system(size: 12)).foregroundStyle(.tertiary)
                         }
-                        .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 12)
-                        Rectangle().fill(Palette.cardStroke).frame(height: 1).padding(.horizontal, 16)
+                        .padding(.horizontal, layout.panePadH).padding(.top, layout.panePadV).padding(.bottom, layout.panePadV - 2)
+                        Rectangle().fill(Palette.cardStroke).frame(height: 1).padding(.horizontal, layout.panePadH)
                         ScrollView {
-                            LazyVStack(alignment: .leading, spacing: 18) {
+                            LazyVStack(alignment: .leading, spacing: layout.lineGap) {
                                 ForEach(p.lines) { l in
                                     LineView(line: SubtitleLine(id: l.id, original: l.original, translated: l.translated,
                                                                 source: l.source, timestamp: l.time),
@@ -262,18 +325,18 @@ private struct HistoryDetail: View {
                                              showTranslation: p.language.translation != p.target.translation, isHistory: true)
                                 }
                             }
-                            .padding(.horizontal, 18).padding(.vertical, 16)
+                            .padding(.horizontal, layout.panePadH).padding(.vertical, layout.panePadV)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
                     .background(
-                        RoundedRectangle(cornerRadius: 18).fill(Palette.card)
-                            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Palette.cardStroke, lineWidth: 1))
+                        RoundedRectangle(cornerRadius: layout.cardRadius).fill(Palette.card)
+                            .overlay(RoundedRectangle(cornerRadius: layout.cardRadius).stroke(Palette.cardStroke, lineWidth: 1))
                     )
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 20)
+            .padding(.horizontal, layout.outerPad)
+            .padding(.bottom, layout.outerPad)
         }
     }
 }
@@ -282,39 +345,46 @@ private struct HistoryDetail: View {
 
 private struct TopBar: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.layout) private var layout
     @ObservedObject var settings: AppSettings
 
     var body: some View {
         HStack {
-            // 左：側欄開關 + 標題
+            // 左：側欄開關 + 標題（縮小時只剩開關）
             HStack(spacing: 10) {
-                RoundIconButton(symbol: "sidebar.left", help: tr("history.toggle")) {
-                    settings.data.sidebarVisible.toggle()
+                if !layout.isMini {
+                    RoundIconButton(symbol: "sidebar.left", help: tr("history.toggle")) {
+                        settings.data.sidebarVisible.toggle()
+                    }
                 }
-                Image(systemName: "captions.bubble.fill")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(Palette.brand)
-                Text(tr("app.title"))
-                    .font(.system(size: 20, weight: .semibold, design: .rounded))
+                if layout.showTitle {
+                    Image(systemName: "captions.bubble.fill")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(Palette.brand)
+                    Text(tr("app.title"))
+                        .font(.system(size: 20, weight: .semibold, design: .rounded))
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
             // 中：開始鈕 + 計時
-            HStack(spacing: 16) {
+            HStack(spacing: layout.isMini ? 8 : 16) {
                 StartButton(settings: settings)
                 if model.isRunning {
                     TimelineView(.periodic(from: .now, by: 1)) { ctx in
                         Text(elapsed(at: ctx.date))
-                            .font(.system(size: 26, weight: .medium, design: .rounded))
+                            .font(.system(size: layout.timerFont, weight: .medium, design: .rounded))
                             .monospacedDigit()
                     }
                     if model.isRecording {
-                        HStack(spacing: 5) {
-                            Circle().fill(Color.red).frame(width: 7, height: 7)
-                            Text(tr("recording.badge")).font(.system(size: 11, weight: .bold)).tracking(1)
+                        HStack(spacing: 4) {
+                            Circle().fill(Color.red).frame(width: 6, height: 6)
+                            if !layout.isMini {
+                                Text(tr("recording.badge")).font(.system(size: 10, weight: .bold)).tracking(1)
+                            }
                         }
                         .foregroundStyle(Color.red)
-                        .padding(.horizontal, 8).frame(height: 22)
+                        .padding(.horizontal, layout.isMini ? 5 : 8).frame(height: layout.isMini ? 16 : 22)
                         .background(Capsule().fill(Color.red.opacity(0.15)))
                         .help(tr("recording.badge.help"))
                         .accessibilityLabel(tr("recording.badge.help"))
@@ -322,22 +392,25 @@ private struct TopBar: View {
                 } else {
                     // 閒置時不要每秒重繪。
                     Text("00:00:00")
-                        .font(.system(size: 26, weight: .medium, design: .rounded))
+                        .font(.system(size: layout.timerFont, weight: .medium, design: .rounded))
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                 }
             }
             .frame(maxWidth: .infinity)
 
-            // 右：設定
-            HStack(spacing: 10) {
+            // 右：縮小時控制列收進這個選單；設定
+            HStack(spacing: layout.isMini ? 6 : 10) {
+                if !layout.showControlRow && model.selectedSession == nil {
+                    OptionsMenu(settings: settings)
+                }
                 RoundIconButton(symbol: "gearshape.fill", help: tr("settings")) { model.showSettings = true }
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         }
-        .padding(.horizontal, 24)
-        .padding(.top, 34)
-        .padding(.bottom, 10)
+        .padding(.horizontal, layout.outerPad + 4)
+        .padding(.top, layout.topPad)
+        .padding(.bottom, layout.isMini ? 6 : 10)
     }
 
     private func elapsed(at now: Date) -> String {
@@ -347,8 +420,57 @@ private struct TopBar: View {
     }
 }
 
+/// 視窗縮小時，目標語言、聲音來源、新增欄位收成一個選單。
+private struct OptionsMenu: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.layout) private var layout
+    @ObservedObject var settings: AppSettings
+    @State private var hover = false
+
+    var body: some View {
+        Menu {
+            Menu {
+                ForEach(model.availableLanguages) { lang in
+                    Button(lang.displayName) { model.setTarget(lang.id) }
+                }
+            } label: {
+                Label("\(tr("translate.to")): \(model.target.displayName)", systemImage: "character.bubble.fill")
+            }
+            Menu {
+                Picker(tr("audio.source"), selection: $settings.data.source) {
+                    ForEach(AudioSourceKind.allCases) { k in
+                        Label(k.label, systemImage: k.symbol).tag(k)
+                    }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+            } label: {
+                Label("\(tr("audio.source")): \(settings.data.source.shortLabel)", systemImage: settings.data.source.symbol)
+            }
+            Divider()
+            Button { model.addPane() } label: { Label(tr("pane.add"), systemImage: "plus") }
+                .disabled(!model.canAddPane)
+        } label: {
+            Image(systemName: "slider.horizontal.3")
+                .font(.system(size: layout.isMini ? 11 : 14, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: layout.iconButton, height: layout.iconButton)
+                .background(Circle().fill(hover ? Palette.pillHover : Palette.pill))
+                .contentShape(Circle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .disabled(model.isRunning)
+        .opacity(model.isRunning ? 0.6 : 1)
+        .onHover { hover = $0 }
+        .help(tr("options"))
+        .accessibilityLabel(tr("options"))
+    }
+}
 private struct StartButton: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.layout) private var layout
     @ObservedObject var settings: AppSettings
     @State private var hover = false
 
@@ -359,15 +481,15 @@ private struct StartButton: View {
                     .fill(model.isRunning
                           ? LinearGradient(colors: [Color(red: 1, green: 0.36, blue: 0.36), Color(red: 0.85, green: 0.18, blue: 0.25)], startPoint: .top, endPoint: .bottom)
                           : LinearGradient(colors: [Color(red: 0.36, green: 0.86, blue: 0.56), Color(red: 0.13, green: 0.66, blue: 0.42)], startPoint: .top, endPoint: .bottom))
-                    .frame(width: 48, height: 48)
-                    .shadow(color: (model.isRunning ? Color.red : Color.green).opacity(hover ? 0.55 : 0.35), radius: hover ? 16 : 10, y: 2)
+                    .frame(width: layout.startSize, height: layout.startSize)
+                    .shadow(color: (model.isRunning ? Color.red : Color.green).opacity(hover ? 0.55 : 0.35), radius: hover ? layout.startSize / 3 : layout.startSize / 5, y: 2)
                 if model.isStarting {
                     ProgressView().controlSize(.small).tint(.white)
                 } else {
                     Image(systemName: model.isRunning ? "stop.fill" : "play.fill")
-                        .font(.system(size: 18, weight: .bold))
+                        .font(.system(size: layout.startSize * 0.38, weight: .bold))
                         .foregroundStyle(.white)
-                        .offset(x: model.isRunning ? 0 : 2)
+                        .offset(x: model.isRunning ? 0 : layout.startSize / 24)
                 }
             }
             .scaleEffect(hover ? 1.05 : 1)
@@ -384,6 +506,7 @@ private struct StartButton: View {
 }
 
 private struct RoundIconButton: View {
+    @Environment(\.layout) private var layout
     let symbol: String
     let help: String
     let action: () -> Void
@@ -392,9 +515,9 @@ private struct RoundIconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: layout.isMini ? 11 : 14, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 34, height: 34)
+                .frame(width: layout.iconButton, height: layout.iconButton)
                 .background(Circle().fill(hover ? Palette.pillHover : Palette.pill))
         }
         .buttonStyle(.plain)
@@ -511,38 +634,40 @@ private struct Banner: View {
 
 private struct PaneView: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.layout) private var layout
     @ObservedObject var pane: PaneEngine
     @ObservedObject var settings: AppSettings
     @State private var downloadConfig: TranslationSession.Configuration?
     @State private var downloadMessage: String?
 
-    private var fontSize: CGFloat { CGFloat(settings.data.fontSize) }
+    private var fontSize: CGFloat { CGFloat(settings.data.fontSize) * layout.fontScale }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-                .padding(.horizontal, 16)
-                .padding(.top, 14)
-                .padding(.bottom, 12)
-            Rectangle().fill(Palette.cardStroke).frame(height: 1).padding(.horizontal, 16)
+                .padding(.horizontal, layout.panePadH)
+                .padding(.top, layout.panePadV - 2)
+                .padding(.bottom, layout.panePadV - 4)
+            Rectangle().fill(Palette.cardStroke).frame(height: 1).padding(.horizontal, layout.panePadH)
             if let err = pane.lastError {
                 Banner(text: err.message, kind: .error,
                        actionTitle: err.packMissing ? tr("pack.download") : nil,
                        action: err.packMissing ? requestDownload : nil)
-                    .padding(.horizontal, 16).padding(.top, 12)
-            } else if let hint = pane.translationHint {
+                    .padding(.horizontal, layout.panePadH).padding(.top, layout.panePadV - 4)
+            } else if let hint = pane.translationHint, !layout.isMini {
+                // 縮到最小時不顯示線上翻譯提示，位置留給字幕；錯誤還是要顯示。
                 Banner(text: hint, kind: .info, actionTitle: tr("pack.download"), action: requestDownload)
-                    .padding(.horizontal, 16).padding(.top, 12)
+                    .padding(.horizontal, layout.panePadH).padding(.top, layout.panePadV - 4)
             }
             if let m = downloadMessage {
-                Text(m).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.top, 6)
+                Text(m).font(.caption).foregroundStyle(.secondary).padding(.horizontal, layout.panePadH + 2).padding(.top, 6)
             }
             transcript
         }
         .background(
-            RoundedRectangle(cornerRadius: 18)
+            RoundedRectangle(cornerRadius: layout.cardRadius)
                 .fill(Palette.card)
-                .overlay(RoundedRectangle(cornerRadius: 18).stroke(Palette.cardStroke, lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: layout.cardRadius).stroke(Palette.cardStroke, lineWidth: 1))
         )
         // 隱形的宿主，只用來觸發系統翻譯語言包的下載對話框。
         .background {
@@ -569,9 +694,11 @@ private struct PaneView: View {
 
     // 標題列：聽的語言（可選）→ 目標語言、狀態、清除、關閉
     private var header: some View {
-        HStack(spacing: 10) {
-            HStack(spacing: 8) {
-                PillMenu(title: pane.language.displayName, symbol: "ear.fill") {
+        let small = layout.iconButton - 6
+        return HStack(spacing: layout.isMini ? 6 : 10) {
+            HStack(spacing: layout.isMini ? 4 : 8) {
+                // 縮到最小時語言名稱只顯示原生寫法，省掉括號裡的翻譯。
+                PillMenu(title: layout.isMini ? pane.language.nativeName : pane.language.displayName, symbol: "ear.fill") {
                     ForEach(model.availableLanguages) { lang in
                         Button(lang.displayName) { model.setPaneLanguage(pane, lang.id) }
                             .disabled(model.isLanguageUsed(lang.id, except: pane))
@@ -580,27 +707,28 @@ private struct PaneView: View {
                 .disabled(model.isRunning)
                 if !pane.sameLanguage {
                     Image(systemName: "arrow.right")
-                        .font(.system(size: 11, weight: .bold))
+                        .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.tertiary)
-                    Text(pane.target.displayName)
-                        .font(.system(size: 14, weight: .semibold))
+                    Text(layout.isMini ? pane.target.nativeName : pane.target.displayName)
+                        .font(.system(size: layout.headerFont, weight: .semibold))
                         .foregroundStyle(Palette.translation)
-                } else {
+                        .lineLimit(1)
+                } else if !layout.isMini {
                     Text(tr("pane.transcriptOnly"))
                         .font(.system(size: 12))
                         .foregroundStyle(.tertiary)
                 }
             }
 
-            Spacer(minLength: 8)
+            Spacer(minLength: 4)
 
-            StatusDot(running: pane.isRunning, text: pane.isRunning ? pane.status : "")
+            StatusDot(running: pane.isRunning, text: pane.isRunning && !layout.isMini ? pane.status : "")
 
             Button { pane.clear() } label: {
                 Image(systemName: "trash")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: layout.isMini ? 10 : 12, weight: .semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 28, height: 28)
+                    .frame(width: small, height: small)
                     .background(Circle().fill(Palette.pill))
             }
             .buttonStyle(.plain)
@@ -610,9 +738,9 @@ private struct PaneView: View {
             if model.panes.count > 1 {
                 Button { model.removePane(pane) } label: {
                     Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .bold))
+                        .font(.system(size: layout.isMini ? 9 : 11, weight: .bold))
                         .foregroundStyle(.secondary)
-                        .frame(width: 28, height: 28)
+                        .frame(width: small, height: small)
                         .background(Circle().fill(Palette.pill))
                 }
                 .buttonStyle(.plain)
@@ -626,7 +754,7 @@ private struct PaneView: View {
     private var transcript: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
+                LazyVStack(alignment: .leading, spacing: layout.lineGap) {
                     if pane.lines.isEmpty && pane.orderedDrafts.isEmpty {
                         emptyState
                     }
@@ -640,8 +768,8 @@ private struct PaneView: View {
                     }
                     Color.clear.frame(height: 1).id("bottom")
                 }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 16)
+                .padding(.horizontal, layout.panePadH)
+                .padding(.vertical, layout.panePadV)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .onChange(of: pane.lines.count) { _, _ in
@@ -653,20 +781,20 @@ private struct PaneView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: layout.isMini ? 6 : 10) {
             Image(systemName: settings.data.source.symbol)
-                .font(.system(size: 34, weight: .regular))
+                .font(.system(size: layout.isMini ? 22 : 34, weight: .regular))
                 .foregroundStyle(.quaternary)
                 .padding(.bottom, 4)
             if pane.isRunning {
                 Text(pane.status == tr("status.listening") ? trf("empty.listening", pane.language.name) : pane.status)
-                    .font(.system(size: 15))
+                    .font(.system(size: layout.isMini ? 12 : 15))
                     .foregroundStyle(.tertiary)
             } else {
                 Text(trf("empty.idle", pane.language.name))
-                    .font(.system(size: 15))
+                    .font(.system(size: layout.isMini ? 12 : 15))
                     .foregroundStyle(.tertiary)
-                if !pane.sameLanguage {
+                if !pane.sameLanguage, !layout.isMini {
                     Text(trf("empty.hint", pane.target.name))
                         .font(.system(size: 13))
                         .foregroundStyle(.quaternary)
@@ -674,13 +802,14 @@ private struct PaneView: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .padding(.top, 70)
+        .padding(.top, layout.isMini ? 20 : 70)
         .multilineTextAlignment(.center)
     }
 }
 
 /// 膠囊造型的下拉選單。
 private struct PillMenu<Content: View>: View {
+    @Environment(\.layout) private var layout
     let title: String
     var symbol: String? = nil
     @ViewBuilder let content: () -> Content
@@ -690,15 +819,15 @@ private struct PillMenu<Content: View>: View {
         Menu {
             content()
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: layout.isMini ? 4 : 6) {
                 if let symbol {
-                    Image(systemName: symbol).font(.system(size: 11, weight: .semibold))
+                    Image(systemName: symbol).font(.system(size: layout.isMini ? 9 : 11, weight: .semibold))
                 }
-                Text(title).font(.system(size: 13, weight: .medium))
-                Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold)).foregroundStyle(.tertiary)
+                Text(title).font(.system(size: layout.isMini ? 11 : 13, weight: .medium)).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(.tertiary)
             }
-            .padding(.horizontal, 12)
-            .frame(height: 30)
+            .padding(.horizontal, layout.isMini ? 8 : 12)
+            .frame(height: layout.pillHeight)
             .background(Capsule().fill(hover ? Palette.pillHover : Palette.pill))
             .contentShape(Capsule())
         }
@@ -758,7 +887,7 @@ private struct LineView: View {
                 Text(line.original)
                     .font(.system(size: fontSize, weight: .regular))
                     .foregroundStyle(.primary)
-                    .lineSpacing(3)
+                    .lineSpacing(fontSize < 14 ? 1 : 3)
             }
             if !showTranslation {
                 EmptyView()
@@ -819,6 +948,7 @@ private struct DraftView: View {
 
 private struct SettingsSheet: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.layout) private var layout
     @ObservedObject var settings: AppSettings
     @Environment(\.dismiss) private var dismiss
 
@@ -942,7 +1072,8 @@ private struct SettingsSheet: View {
             .padding(.top, 8)
         }
         .padding(20)
-        .frame(width: 600, height: 720)
+        // 視窗比設定頁小的時候，設定頁跟著縮，不然會被切掉。
+        .frame(width: min(600, max(340, layout.size.width - 40)), height: min(720, max(300, layout.size.height - 40)))
         .background(Palette.window)
     }
 }

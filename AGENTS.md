@@ -40,6 +40,11 @@ Recording again. Tell the user this is expected.
 
 ## Verify without permissions
 
+Layout check without screen recording: `build/PolyTranslateLive.app/Contents/MacOS/PolyTranslateLive --snapshot 480x300 /tmp/shot.png`
+opens a window of that size with sample subtitles, renders it to PNG after two seconds and quits (does not touch the saved
+window frame). Use 1240x780, 720x450 and 480x300 to see the regular, compact and mini layouts (`Layout` in ContentView.swift).
+
+
 ```bash
 say -v Samantha -o /tmp/en.wav --data-format=LEI16@16000 "Good morning everyone. Today we review the results."
 /Applications/PolyTranslate\ Live.app/Contents/MacOS/PolyTranslateLive --test-wav /tmp/en.wav
@@ -66,7 +71,7 @@ No XCTest; it is a plain executable that exits non-zero on failure. Add cases to
 
 | Path | Purpose |
 |---|---|
-| `Install.command` | double-click installer for end users: environment checks, `git pull`, optional `tools/make_cert.sh`, `./build.sh install`, launch |
+| `Install.command` | double-click installer for end users: environment checks, `git pull`, `./build.sh install`, TCC reset on update, launch. Never asks for a password (`tools/make_cert.sh` is for developers only) |
 | `Sources/` | all Swift sources; `main.swift` is the AppKit entry point (there is no Xcode project) |
 | `Sources/RecognitionEngine.swift` | parallel lanes + `Arbiter` (confidence vote, overlap trimming, script checks) |
 | `Sources/L10n.swift` | UI string table in English, Traditional Chinese, Japanese and Korean (one array per key, in that order); add keys here, never hard-code UI text |

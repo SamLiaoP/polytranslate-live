@@ -58,7 +58,7 @@
 git clone https://github.com/SamLiaoP/polytranslate-live.git
 ```
 
-Open the `polytranslate-live` folder in Finder and double-click **`Install.command`**. Terminal opens and the script checks your Mac (Apple Silicon, macOS 26.4+), installs the Xcode Command Line Tools if they are missing (no Xcode needed), builds the app, puts it in `/Applications` and launches it. Double-click it again later to update. If you downloaded the repo as a ZIP instead of cloning, right-click `Install.command` and choose Open the first time, because macOS quarantines downloaded files.
+Open the `polytranslate-live` folder in Finder and double-click **`Install.command`**. Terminal opens and the script checks your Mac (Apple Silicon, macOS 26.4+), installs the Xcode Command Line Tools if they are missing (no Xcode needed), builds the app, puts it in `/Applications` and launches it. Double-click it again later to update; after an update macOS asks for Screen & System Audio Recording once more, because the rebuilt app counts as a new one. The installer never asks for your password and does not touch your keychain; the only dialogs are macOS's own permission prompts. If you downloaded the repo as a ZIP instead of cloning, right-click `Install.command` and choose Open the first time, because macOS quarantines downloaded files.
 
 **From Terminal instead:**
 
@@ -204,7 +204,7 @@ Written from scratch in Swift. Ideas and API usage patterns were learned from th
 git clone https://github.com/SamLiaoP/polytranslate-live.git
 ```
 
-用 Finder 打開 `polytranslate-live` 資料夾，點兩下 **`Install.command`**。Terminal 會自動開起來檢查機器（Apple Silicon、macOS 26.4 以上）、沒有 Xcode Command Line Tools 就幫你叫出安裝視窗（不用裝 Xcode）、編譯、裝進「應用程式」然後打開 App。之後要更新，再點一次就好。如果你是從 GitHub 下載 ZIP 而不是 clone，第一次請對 `Install.command` 按右鍵選「打開」，因為 macOS 會隔離下載的檔案。
+用 Finder 打開 `polytranslate-live` 資料夾，點兩下 **`Install.command`**。Terminal 會自動開起來檢查機器（Apple Silicon、macOS 26.4 以上）、沒有 Xcode Command Line Tools 就幫你叫出安裝視窗（不用裝 Xcode）、編譯、裝進「應用程式」然後打開 App。之後要更新，再點一次就好；更新後 macOS 會再問一次「螢幕與系統錄音」，因為重新編譯的 App 被當成新的。安裝程式不會要你的密碼、不碰鑰匙圈，只會出現 macOS 自己的權限視窗。如果你是從 GitHub 下載 ZIP 而不是 clone，第一次請對 `Install.command` 按右鍵選「打開」，因為 macOS 會隔離下載的檔案。
 
 **想用 Terminal 的話：**
 
