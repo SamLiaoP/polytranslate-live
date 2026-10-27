@@ -273,6 +273,16 @@ MainActor.assumeIsolated {
     checkEqual(reloaded.sessions.last?.preview, "updated text", "history updated text persisted")
 }
 
+// ---- Timeline：5 分鐘一格 ----
+do {
+    let cal = Calendar.current
+    let base = cal.date(from: DateComponents(year: 2026, month: 10, day: 22, hour: 14, minute: 3, second: 20))!
+    checkEqual(Timeline.bucket(base), Timeline.bucket(base.addingTimeInterval(90)), "14:03 與 14:04 同一格")
+    check(Timeline.bucket(base) != Timeline.bucket(base.addingTimeInterval(120)), "14:03 與 14:05 不同格")
+    checkEqual(Timeline.label(base), "14:00", "格線標籤是該格起始時間")
+    checkEqual(Timeline.label(base.addingTimeInterval(120)), "14:05", "下一格 14:05")
+}
+
 // ---- L10n：四種介面語言都要有字串，缺的會退回英文 ----
 do {
     checkEqual(L10n.incompleteKeys(), [], "每個 key 都有四種語言")
@@ -290,6 +300,21 @@ do {
     checkEqual(tr("start"), "Start", "en start")
     checkEqual(UILanguage.ja.localeIdentifier, "ja_JP", "ja locale")
     checkEqual(UILanguage.ko.localeIdentifier, "ko_KR", "ko locale")
+}
+
+// MARK: - Dedup（混合模式跨來源去重）
+do {
+    check(Dedup.isDuplicate("Hello, world! How are you today?", "hello world how are you today"), "大小寫標點不同 → 同一句")
+    check(Dedup.isDuplicate("We need to finalize the contract with Cathay by Friday.",
+                            "We need to finalise the contract with Cathay by Friday"), "一字之差 → 同一句")
+    check(Dedup.isDuplicate("今天的會議先討論合約內容，然後再看時程。", "今天的會議先討論合約內容然後再看時程"), "中文標點差異 → 同一句")
+    check(Dedup.isDuplicate("Let's start with the agenda.", "Let's start with the agenda. Then we go through the numbers."),
+          "一條長一條短、短的整段包含在長的裡 → 同一句")
+    check(Dedup.isDuplicate("OK", "OK, let's go through the numbers for next quarter.") == false, "短句包含不算（避免誤殺）")
+    check(Dedup.isDuplicate("The budget was approved yesterday.", "The meeting is scheduled for Monday.") == false, "不同句")
+    check(Dedup.isDuplicate("", "anything") == false, "空字串不算")
+    checkEqual(Dedup.similarity(Dedup.normalize("abcd"), Dedup.normalize("abcd")), 1.0, "完全相同相似度 1")
+    check(Dedup.similarity(Dedup.normalize("abcdefghij"), Dedup.normalize("abcdefghix")) >= 0.9, "差一字 ≥ 0.9")
 }
 
 print(failures == 0 ? "✓ \(total) checks passed" : "✗ \(failures)/\(total) checks failed")

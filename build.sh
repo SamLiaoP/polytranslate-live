@@ -56,6 +56,11 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 # CFBundleVersion 蓋成編譯時間，「關於」視窗一眼就看得出跑的是不是剛編的版本。
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(date +%Y%m%d.%H%M)" "$APP/Contents/Info.plist"
+# 再記下 git commit（有未 commit 的改動就加 -dirty），設定頁最下面會顯示「0.3.0 · 20261027.1345 · 9d9034a」。
+COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+if [ -n "$(git status --porcelain 2>/dev/null)" ]; then COMMIT="$COMMIT-dirty"; fi
+/usr/libexec/PlistBuddy -c "Add :PTLBuildCommit string $COMMIT" "$APP/Contents/Info.plist" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Set :PTLBuildCommit $COMMIT" "$APP/Contents/Info.plist"
 cp "$OUT/$APP_NAME" "$APP/Contents/MacOS/$APP_NAME"
 if [ -f Resources/AppIcon.icns ]; then
   cp Resources/AppIcon.icns "$APP/Contents/Resources/"
@@ -85,6 +90,9 @@ if [ "$1" = "install" ] || [ "$1" = "run" ]; then
   if pkill -x "$APP_NAME" 2>/dev/null; then
     for _ in $(seq 1 50); do pgrep -x "$APP_NAME" >/dev/null || break; sleep 0.1; done
   fi
+  # 記住舊版的簽章條件（TCC 用它認 App）。簽章換了（例如 ad-hoc → 憑證、或 ad-hoc 重建）就得清掉舊授權，
+  # 否則「螢幕與系統錄音」在系統設定裡看起來是開的，實際上對不上新版，永遠被拒。
+  OLD_REQ=""; [ -d "$INSTALLED" ] && OLD_REQ="$(codesign -d -r- "$INSTALLED" 2>&1 | grep '^designated' || true)"
   rm -rf "$INSTALLED"
   ditto "$APP" "$INSTALLED"
   # 以前裝在 ~/Applications 的舊版順手清掉，免得 Spotlight 跑出兩個。
@@ -96,6 +104,13 @@ if [ "$1" = "install" ] || [ "$1" = "run" ]; then
   # 複製後重新簽名，確保安裝位置的簽章完整（TCC 權限綁定這個路徑）。
   codesign --force --deep -s "$SIGN_ID" --identifier "$BUNDLE_ID" "$INSTALLED"
   codesign --verify --strict "$INSTALLED"
+  NEW_REQ="$(codesign -d -r- "$INSTALLED" 2>&1 | grep '^designated' || true)"
+  if [ -n "$OLD_REQ" ] && [ "$OLD_REQ" != "$NEW_REQ" ]; then
+    tccutil reset ScreenCapture "$BUNDLE_ID" >/dev/null 2>&1 || true
+    tccutil reset AudioCapture "$BUNDLE_ID" >/dev/null 2>&1 || true
+    echo "  簽章變了，已清掉舊的「螢幕與系統錄音」授權；下次按「開始」macOS 會重新詢問，允許後 ⌘Q 重開。"
+    TCC_RESET=1
+  fi
   touch "$INSTALLED"
   # 向 Launch Services 登記，Finder／Spotlight 立刻看得到新版。
   /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f "$INSTALLED" 2>/dev/null || true

@@ -30,8 +30,8 @@ final class AppModel: ObservableObject {
 
     static let maxPanes = 4
 
-    /// `PolyTranslateLive --test-wav 檔案.wav`：不開麥克風與系統聲音，改把 wav 以真實時間速度灌進「系統聲音」通道，
-    /// 並自動開始。用來在沒有權限、沒有人講話的情況下驗證整條管線。
+    /// `PolyTranslateLive --test-wav 檔案.wav`：不開麥克風與系統聲音，改把 wav 以真實時間速度灌進目前來源的擷取通道，
+    /// 並自動開始；加 `--test-source mixed|system|microphone` 可指定來源（只改記憶體，不寫回設定）。用來在沒有權限、沒有人講話的情況下驗證整條管線。
     private let testWAV: URL? = {
         let args = CommandLine.arguments
         guard let i = args.firstIndex(of: "--test-wav"), i + 1 < args.count else { return nil }
@@ -328,8 +328,8 @@ final class AppModel: ObservableObject {
 
     private func startTestFeed(_ url: URL) {
         let hub = self.hub
-        // 灌進目前來源的第一個擷取通道（系統聲音或麥克風），不然設定是麥克風時什麼都辨識不到。
-        let kind = settings.data.source.captures[0]
+        // 灌進目前來源的每一個擷取通道：混合模式會同時餵系統聲音和麥克風，正好模擬「兩邊聽到同一句」的去重情境。
+        let kinds = settings.data.source.captures
         testFeedTask = Task.detached {
             guard let file = try? AVAudioFile(forReading: url) else { dlog("TEST MODE: cannot open wav"); return }
             let fmt = file.processingFormat
@@ -341,13 +341,13 @@ final class AppModel: ObservableObject {
                   let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: chunk) {
                 do { try file.read(into: buf) } catch { break }
                 guard buf.frameLength > 0 else { break }
-                if let s = resampler.process(buf) { hub.inject(kind, s) }
+                if let s = resampler.process(buf) { for k in kinds { hub.inject(k, s) } }
                 fed += Double(buf.frameLength) / fmt.sampleRate
                 let wait = start.addingTimeInterval(fed).timeIntervalSinceNow
                 if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
             }
             for _ in 0..<30 where !Task.isCancelled {
-                hub.inject(kind, [Float](repeating: 0, count: 1_600))
+                for k in kinds { hub.inject(k, [Float](repeating: 0, count: 1_600)) }
                 try? await Task.sleep(for: .milliseconds(100))
             }
             dlog("TEST MODE: wav finished (\(String(format: "%.1f", fed))s); stopping")

@@ -318,7 +318,10 @@ private struct HistoryDetail: View {
                         Rectangle().fill(Palette.cardStroke).frame(height: 1).padding(.horizontal, layout.panePadH)
                         ScrollView {
                             LazyVStack(alignment: .leading, spacing: layout.lineGap) {
-                                ForEach(p.lines) { l in
+                                ForEach(Array(p.lines.enumerated()), id: \.element.id) { i, l in
+                                    if i == 0 || Timeline.bucket(l.time) != Timeline.bucket(p.lines[i - 1].time) {
+                                        TimeMarker(date: l.time)
+                                    }
                                     LineView(line: SubtitleLine(id: l.id, original: l.original, translated: l.translated,
                                                                 source: l.source, timestamp: l.time),
                                              fontSize: fontSize, showSource: record.source == .mixed,
@@ -639,6 +642,8 @@ private struct PaneView: View {
     @ObservedObject var settings: AppSettings
     @State private var downloadConfig: TranslationSession.Configuration?
     @State private var downloadMessage: String?
+    /// 使用者往上捲去看舊字幕時變 false：新句子進來不再自動捲到底，改顯示「回到最新」按鈕。
+    @State private var followBottom = true
 
     private var fontSize: CGFloat { CGFloat(settings.data.fontSize) * layout.fontScale }
 
@@ -751,6 +756,11 @@ private struct PaneView: View {
         }
     }
 
+    private struct ScrollState: Equatable {
+        var offset: CGFloat
+        var atBottom: Bool
+    }
+
     private var transcript: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -758,7 +768,10 @@ private struct PaneView: View {
                     if pane.lines.isEmpty && pane.orderedDrafts.isEmpty {
                         emptyState
                     }
-                    ForEach(pane.lines) { line in
+                    ForEach(Array(pane.lines.enumerated()), id: \.element.id) { i, line in
+                        if i == 0 || Timeline.bucket(line.timestamp) != Timeline.bucket(pane.lines[i - 1].timestamp) {
+                            TimeMarker(date: line.timestamp)
+                        }
                         LineView(line: line, fontSize: fontSize, showSource: settings.data.source == .mixed,
                                  showTranslation: !pane.sameLanguage)
                     }
@@ -772,11 +785,45 @@ private struct PaneView: View {
                 .padding(.vertical, layout.panePadV)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .onChange(of: pane.lines.count) { _, _ in
+            // 分辨「使用者往上捲」和「內容變長」：前者 offset 變小，後者 offset 不變只是離底部變遠。
+            .onScrollGeometryChange(for: ScrollState.self) { g in
+                ScrollState(offset: g.contentOffset.y,
+                            atBottom: g.contentOffset.y + g.containerSize.height >= g.contentSize.height - 24)
+            } action: { old, new in
+                if new.atBottom { followBottom = true }
+                else if new.offset < old.offset - 2 { followBottom = false }
+            }
+            .overlay(alignment: .bottom) {
+                if !followBottom {
+                    Button {
+                        followBottom = true
+                        withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "arrow.down").font(.system(size: layout.isMini ? 9 : 11, weight: .bold))
+                            if !layout.isMini { Text(tr("scroll.latest")).font(.system(size: 12, weight: .medium)) }
+                        }
+                        .padding(.horizontal, layout.isMini ? 8 : 12)
+                        .frame(height: layout.isMini ? 22 : 28)
+                        .background(Capsule().fill(Palette.pillHover))
+                        .overlay(Capsule().stroke(Palette.cardStroke, lineWidth: 1))
+                        .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.bottom, layout.panePadV)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .help(tr("scroll.latest"))
+                    .accessibilityLabel(tr("scroll.latest"))
+                }
+            }
+            .animation(.easeOut(duration: 0.2), value: followBottom)
+            .onChange(of: pane.lines.count) { _, count in
+                if count == 0 { followBottom = true }   // 清除後重新跟隨
+                guard followBottom else { return }
                 withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo("bottom", anchor: .bottom) }
             }
-            .onChange(of: pane.drafts) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
-            .onChange(of: pane.draftTranslations) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
+            .onChange(of: pane.drafts) { _, _ in if followBottom { proxy.scrollTo("bottom", anchor: .bottom) } }
+            .onChange(of: pane.draftTranslations) { _, _ in if followBottom { proxy.scrollTo("bottom", anchor: .bottom) } }
         }
     }
 
@@ -858,6 +905,25 @@ private struct StatusDot: View {
             }
         }
         .padding(.trailing, 4)
+    }
+}
+
+/// 時間軸格線：每 5 分鐘一條，中間標該格的起始時間。
+private struct TimeMarker: View {
+    @Environment(\.layout) private var layout
+    let date: Date
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Rectangle().fill(Palette.cardStroke).frame(height: 1)
+            Text(Timeline.label(date))
+                .font(.system(size: layout.isMini ? 9 : 11, weight: .medium, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(.tertiary)
+            Rectangle().fill(Palette.cardStroke).frame(height: 1)
+        }
+        .padding(.vertical, layout.isMini ? 0 : 2)
+        .accessibilityLabel(Timeline.label(date))
     }
 }
 
@@ -1064,6 +1130,11 @@ private struct SettingsSheet: View {
             .scrollContentBackground(.hidden)
 
             HStack {
+                // 版本・編譯時間・commit，看一眼就知道開的是哪一版。
+                Text("\(tr("app.title")) \(AppInfo.summary)")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(1).truncationMode(.middle)
                 Spacer()
                 Button(tr("done")) { dismiss() }
                     .buttonStyle(.borderedProminent)

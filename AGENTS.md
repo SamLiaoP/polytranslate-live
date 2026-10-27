@@ -52,7 +52,9 @@ sleep 20; tail -20 ~/Library/Logs/PolyTranslateLive.log
 ```
 
 Expected log lines: `lane ready`, `[P1] final(system): …`, `[P1] translated: …`, `history saved`.
-The test feed stops by itself. Logs live at `~/Library/Logs/PolyTranslateLive.log`.
+The test feed stops by itself. Add `--test-source mixed` (or `system` / `microphone`) to override the audio source for
+that run only (nothing is written back to the user's settings); in mixed mode the wav is fed into both lanes, which
+exercises the cross-source duplicate filter (`Sources/Dedup.swift`, expect `dropped duplicate from microphone` lines). Logs live at `~/Library/Logs/PolyTranslateLive.log`.
 
 The log normally records only events (lanes, arbiter decisions, translation errors), **not what was said**.
 Lines containing recognized text or translations appear only with `--verbose` or in `--test-wav` mode.
@@ -71,7 +73,7 @@ No XCTest; it is a plain executable that exits non-zero on failure. Add cases to
 
 | Path | Purpose |
 |---|---|
-| `Install.command` | double-click installer for end users: environment checks, `git pull`, `./build.sh install`, TCC reset on update, launch. Never asks for a password (`tools/make_cert.sh` is for developers only) |
+| `Install.command` | double-click installer for end users: environment checks, `git pull`, `./build.sh install` (which resets the Screen & System Audio Recording grant when the signature changed), launch. Never asks for a password (`tools/make_cert.sh` is for developers only) |
 | `Sources/` | all Swift sources; `main.swift` is the AppKit entry point (there is no Xcode project) |
 | `Sources/RecognitionEngine.swift` | parallel lanes + `Arbiter` (confidence vote, overlap trimming, script checks) |
 | `Sources/L10n.swift` | UI string table in English, Traditional Chinese, Japanese and Korean (one array per key, in that order); add keys here, never hard-code UI text |

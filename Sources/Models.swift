@@ -224,13 +224,25 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    /// 測試模式用 `--test-source` 改了來源：只改記憶體，不寫回 UserDefaults，免得測試把使用者的設定蓋掉。
+    private let readOnly: Bool
+
     init() {
+        var d: AppSettingsData
         if let raw = UserDefaults.standard.data(forKey: Self.key),
            let decoded = try? JSONDecoder().decode(AppSettingsData.self, from: raw) {
-            data = decoded
+            d = decoded
         } else {
-            data = AppSettingsData()
+            d = AppSettingsData()
         }
+        let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "--test-source"), i + 1 < args.count, let k = AudioSourceKind(rawValue: args[i + 1]) {
+            d.source = k
+            readOnly = true
+        } else {
+            readOnly = false
+        }
+        data = d
         L10n.language = data.uiLanguage
     }
 
@@ -250,6 +262,7 @@ final class AppSettings: ObservableObject {
     func flush() {
         persistTask?.cancel()
         persistTask = nil
+        guard !readOnly else { return }
         if let raw = try? JSONEncoder().encode(data) {
             UserDefaults.standard.set(raw, forKey: Self.key)
         }
@@ -275,6 +288,21 @@ enum LanguageMap {
         if l.hasPrefix("pt-BR") { return "pt-BR" }
         return String(l.prefix(2))
     }
+}
+
+/// 字幕時間軸：每 5 分鐘一格，格線上顯示該格的起始時間（例如 14:05）。
+enum Timeline {
+    static let bucketSeconds = 300.0
+    /// 同一格的句子回傳同一個整數。參考時間在整點，時區位移都是 15 分鐘的倍數，所以格線在所有時區都對齊 :00、:05…。
+    static func bucket(_ date: Date) -> Int { Int((date.timeIntervalSinceReferenceDate / bucketSeconds).rounded(.down)) }
+    static func label(_ date: Date) -> String {
+        formatter.string(from: Date(timeIntervalSinceReferenceDate: Double(bucket(date)) * bucketSeconds))
+    }
+    private static let formatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f
+    }()
 }
 
 /// 文字系統判斷。
@@ -355,4 +383,13 @@ enum ScriptDetector {
         case .other: return true
         }
     }
+}
+
+/// 版本資訊，顯示在設定頁最下面，讓使用者知道開的是哪一版。
+/// 格式「0.3.0 · 20261027.1345 · 9d9034a」：版本號、編譯時間（build.sh 蓋進 CFBundleVersion）、git commit。
+enum AppInfo {
+    static var version: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?" }
+    static var build: String { Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?" }
+    static var commit: String? { Bundle.main.infoDictionary?["PTLBuildCommit"] as? String }
+    static var summary: String { ([version, build] + (commit.map { [$0] } ?? [])).joined(separator: " · ") }
 }

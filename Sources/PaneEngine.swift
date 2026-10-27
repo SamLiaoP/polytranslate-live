@@ -45,10 +45,16 @@ final class PaneEngine: ObservableObject, Identifiable {
 
     /// 依時間排序的草稿（混合模式會有兩個來源）。
     var orderedDrafts: [(source: CaptureKind, text: String, translation: String)] {
-        CaptureKind.allCases.compactMap { k in
-            guard let t = drafts[k], !t.isEmpty else { return nil }
-            return (k, t, draftTranslations[k] ?? "")
+        var out: [(source: CaptureKind, text: String, translation: String)] = []
+        for k in CaptureKind.allCases {
+            guard let t = drafts[k], !t.isEmpty else { continue }
+            // 混合模式兩條來源聽到同一句：草稿只留先出現的那條；另一來源剛定稿的同一句也不再重複顯示草稿。
+            if out.contains(where: { Dedup.isDuplicate($0.text, t) }) { continue }
+            if let last = lines.last, last.source != k, last.timestamp > Date().addingTimeInterval(-Dedup.windowSeconds),
+               Dedup.isDuplicate(last.original, t) { continue }
+            out.append((k, t, draftTranslations[k] ?? ""))
         }
+        return out
     }
 
     func clearError() {
@@ -115,11 +121,25 @@ final class PaneEngine: ObservableObject, Identifiable {
         draftTranslations[source] = nil
         lastDraftSent[source] = nil
         guard Self.isMeaningful(text) else { return }
+        if isCrossSourceDuplicate(text, from: source) {
+            dlog("[\(id)] dropped duplicate from \(source.rawValue) (already heard via the other source)")
+            return
+        }
         let line = SubtitleLine(id: nextLineID, original: text, translated: nil, source: source, timestamp: Date())
         nextLineID += 1
         lines.append(line)
         if lines.count > maxLines { lines.removeFirst(lines.count - maxLines) }
         translate(line: line)
+    }
+
+    /// 混合模式：另一個來源在最近 `Dedup.windowSeconds` 內已經收到同一句，就不要再放一條。
+    private func isCrossSourceDuplicate(_ text: String, from source: CaptureKind) -> Bool {
+        let cutoff = Date().addingTimeInterval(-Dedup.windowSeconds)
+        for line in lines.reversed() {
+            if line.timestamp < cutoff { break }
+            if line.source != source, Dedup.isDuplicate(line.original, text) { return true }
+        }
+        return false
     }
 
     /// 開始時先確認語言包狀態：不支援就提早報錯；支援但沒裝（會走線上）就先提示，不必等第一句翻完。

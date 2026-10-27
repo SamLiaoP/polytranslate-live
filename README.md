@@ -35,7 +35,7 @@
 - **Each pane listens for one language.** Start with one pane (English → Traditional Chinese) and add more — e.g. a Japanese pane — up to four.
 - **Automatic routing by language.** Every pane's language is recognized in parallel on the same audio; when a sentence is finalized, the recognizer with the highest confidence wins and the sentence appears in that pane. The target language itself runs as a silent lane so that, say, Chinese speech never shows up as garbage in the English pane.
 - **Live drafts.** While someone is still talking you see a gray draft and a draft translation; it turns solid when the sentence ends.
-- **Mixed input without mixing audio.** System audio and microphone each get their own recognizers; lines are tagged with a speaker or mic icon.
+- **Mixed input without mixing audio.** System audio and microphone each get their own recognizers; lines are tagged with a speaker or mic icon. When both hear the same sentence (headphone leakage, headset crosstalk, speakers picked up by the mic), only the first copy is kept.
 - **History sidebar.** Every session is saved when you press Stop; browse, copy as text, or delete from the collapsible sidebar. Optionally also save a Markdown transcript to Documents › PolyTranslate Live (off by default; enable in Settings).
 - **Interface in English, Traditional Chinese, Japanese or Korean.** Language names show as *native name (name in your UI language)*, e.g. `日本語 (Japanese)`.
 - **Vocabulary and wording.** Settings › Recognition takes a list of names and jargon the recognizer should prefer (fed to SpeechAnalyzer as contextual strings). Settings › Chinese wording converts Traditional Chinese translations to Taiwan terms (built-in OpenCC table plus your own rules). By default only the languages of your panes are recognized; turn on “Someone will speak the target language” to add a recognizer that drops sentences spoken in the target language.
@@ -86,7 +86,7 @@ On first **Start**, macOS asks for two permissions:
 1. **Microphone**.
 2. **Screen & System Audio Recording** — needed to capture system audio. After enabling it in System Settings › Privacy & Security, **quit and relaunch the app**.
 
-> The app is ad-hoc signed by default, so after each rebuild macOS no longer matches the old Screen & System Audio Recording grant: the switch in System Settings still shows on, but capture fails. Remove the app with “−” in that list, relaunch, and allow again. To stop this happening, run `tools/make_cert.sh` once: it creates a self-signed certificate “PolyTranslate Live Dev” and `build.sh` signs with it from then on, so the grant survives rebuilds.
+> The app is ad-hoc signed by default, so after each rebuild macOS no longer matches the old Screen & System Audio Recording grant: the switch in System Settings still shows on, but capture fails. `./build.sh install` compares the old and new signatures and clears the stale grant for you when they differ (this also covers switching from ad-hoc to a certificate), so the next Start simply asks again. If you ever hit it anyway, remove the app with “−” in that list, relaunch, and allow again. To stop it happening at all, run `tools/make_cert.sh` once: it creates a self-signed certificate “PolyTranslate Live Dev” and `build.sh` signs with it from then on, so the grant survives rebuilds.
 
 ### Faster translation: install offline language packs
 
@@ -127,6 +127,7 @@ Sources/
   Translator.swift        AppleTranslator (lowLatency → highFidelity fallback), TranslatorHub
   History.swift           session records (JSON in ~/Library/Application Support/PolyTranslateLive/history)
   TaiwanWording.swift     Taiwan wording table for zh-Hant translations (OpenCC data, Apache-2.0: third_party/OpenCC-LICENSE.txt)
+  Dedup.swift             mixed mode: drops a sentence the other source already produced within 20 s
   SessionRecorder.swift   records each session to .m4a from the AudioHub (mixed source: FIFO per capture, summed on a fixed tick)
   ContentView.swift       SwiftUI interface
   L10n.swift              string table (English / Traditional Chinese / Japanese / Korean)
@@ -184,7 +185,7 @@ Written from scratch in Swift. Ideas and API usage patterns were learned from th
 - **每個字幕欄聽一種語言。** 預設一欄（英文 → 繁體中文），可以再加，例如加一欄日文，最多四欄。
 - **依語言自動分流。** 所有欄位的語言同時辨識同一段聲音，每句話定稿時由信心值最高的辨識器勝出，出現在對應的欄位。目標語言本身也有一條隱藏的通道，所以有人說中文時不會變成英文欄的亂碼。
 - **即時草稿。** 對方還在講時先看到灰色草稿和草稿翻譯，說完一句就定稿。
-- **混合輸入不混音。** 系統聲音和麥克風各有自己的辨識器，字幕前標記喇叭或麥克風圖示。
+- **混合輸入不混音。** 系統聲音和麥克風各有自己的辨識器，字幕前標記喇叭或麥克風圖示。兩邊聽到同一句（耳機漏音、耳麥串音、麥克風收到喇叭聲）時只留先到的那條。
 - **歷史紀錄側欄。** 每次按停止就存一筆，左側可收納的列表能回看、複製成文字、刪除。也可以在設定裡打開「停止時存逐字稿」，另存一份 Markdown 到「文件 › PolyTranslate Live」（預設關閉）。
 - **介面可選英文、繁體中文、日文、韓文。** 語言名稱顯示成「原生名稱（介面語言的翻譯）」，例如 `English（英文）`、`日本語（日文）`。
 - **詞彙表與用語。** 「設定 › 辨識」可以填人名、專有名詞讓辨識器偏向這些拼法（餵給 SpeechAnalyzer 的 contextual strings）。「設定 › 中文用語」會把繁體中文譯文換成台灣用語（內建 OpenCC 對照表，可加自訂規則）。預設只辨識各欄選的語言；有人會講目標語言時再打開「有人會講目標語言」，多開一條辨識把那些句子略過。
@@ -234,7 +235,7 @@ repo 裡附了 [`AGENTS.md`](AGENTS.md)，寫明系統需求、指令、權限�
 1. **麥克風**。
 2. **螢幕與系統音訊錄製**：擷取系統聲音要用。到 系統設定 › 隱私權與安全性 開啟後，**完全結束 App 再重開**。
 
-> App 預設是 ad-hoc 簽名，每次重新 `build.sh` 後 macOS 認不得舊的「螢幕與系統錄音」授權：系統設定裡開關還是開的，但擷取會失敗。到那個清單用「−」移除 App，重新啟動再允許一次即可。想一勞永逸，跑一次 `tools/make_cert.sh`：它會建一張自簽憑證「PolyTranslate Live Dev」，之後 `build.sh` 都用它簽名，授權就會跨重建保留。
+> App 預設是 ad-hoc 簽名，每次重新 `build.sh` 後 macOS 認不得舊的「螢幕與系統錄音」授權：系統設定裡開關還是開的，但擷取會失敗。`./build.sh install` 會比對新舊簽章，不一樣就自動把舊授權清掉（從 ad-hoc 換成憑證也算），下次按「開始」直接重新詢問。真的碰到時，到那個清單用「−」移除 App，重新啟動再允許一次即可。想一勞永逸，跑一次 `tools/make_cert.sh`：它會建一張自簽憑證「PolyTranslate Live Dev」，之後 `build.sh` 都用它簽名，授權就會跨重建保留。
 
 ### 讓翻譯更快：安裝離線語言包
 

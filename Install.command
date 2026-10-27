@@ -39,11 +39,12 @@ fi
 if [ "${POLY_DRY_RUN:-0}" = "1" ]; then say_ "（dry run，略過編譯）"; exit 0; fi
 
 # 4. 簽名：一般使用者用 ad-hoc，不碰鑰匙圈、不要密碼。代價是每次更新後 macOS 會把它當新 App，
-#    「螢幕與系統錄音」要再允許一次；下面第 6 步會先把舊授權清掉，讓系統直接重新詢問，不會卡在「開著但沒作用」。
+#    「螢幕與系統錄音」要再允許一次；build.sh 會比對新舊簽章，變了就把舊授權清掉，讓系統直接重新詢問，不會卡在「開著但沒作用」。
 #    開發者想讓授權跨更新保留，可以自己跑 tools/make_cert.sh（會要一次系統密碼）。
 APP="/Applications/PolyTranslate Live.app"
 [ -d "$APP" ] || APP="$HOME/Applications/PolyTranslate Live.app"
-WAS_INSTALLED=0; [ -d "$APP" ] && WAS_INSTALLED=1
+WAS_INSTALLED=0; OLD_REQ=""
+if [ -d "$APP" ]; then WAS_INSTALLED=1; OLD_REQ="$(codesign -d -r- "$APP" 2>&1 | grep '^designated' || true)"; fi
 
 # 5. 編譯並安裝
 say_ "→ 編譯並安裝（第一次約 1 分鐘）/ Building and installing"
@@ -51,14 +52,13 @@ if ! ./build.sh install; then
   die "編譯失敗。把上面的訊息貼給開發者。 / Build failed; please send the output above to the developer."
 fi
 
-# 6. 更新時清掉舊的系統錄音授權（只針對這個 App，不需要密碼），macOS 會在下次按「開始」時重新詢問。
+# 6. 更新後若簽章變了（ad-hoc 每次重建都會變），build.sh 已把舊的系統錄音授權清掉；這裡只提醒使用者。
 APP="/Applications/PolyTranslate Live.app"
 [ -d "$APP" ] || APP="$HOME/Applications/PolyTranslate Live.app"
-if [ "$WAS_INSTALLED" = "1" ] && ! security find-identity -v -p codesigning 2>/dev/null | grep -q '"PolyTranslate Live Dev"'; then
-  tccutil reset ScreenCapture dev.samliao.polytranslatelive >/dev/null 2>&1 || true
-  tccutil reset AudioCapture dev.samliao.polytranslatelive >/dev/null 2>&1 || true
-  say_ "已更新。因為 App 重新編譯過，下次按「開始」時 macOS 會再問一次「螢幕與系統錄音」，允許後 ⌘Q 重開即可。"
-  say_ "Updated. Because the app was rebuilt, macOS will ask for Screen & System Audio Recording once more on the next Start; allow it, then quit and relaunch."
+NEW_REQ="$(codesign -d -r- "$APP" 2>&1 | grep '^designated' || true)"
+if [ "$WAS_INSTALLED" = "1" ] && [ "$OLD_REQ" != "$NEW_REQ" ]; then
+  say_ "已更新。因為 App 的簽章變了，下次按「開始」時 macOS 會再問一次「螢幕與系統錄音」，允許後 ⌘Q 重開即可。"
+  say_ "Updated. The app's signature changed, so macOS will ask for Screen & System Audio Recording once more on the next Start; allow it, then quit and relaunch."
 fi
 
 # 7. 打開
