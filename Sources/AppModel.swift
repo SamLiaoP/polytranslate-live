@@ -135,7 +135,7 @@ final class AppModel: ObservableObject {
         engine.onFinal = { [weak self] slot, capture, text in
             guard let self else { return }
             if let p = slotToPane[slot] { p.receiveFinal(text, from: capture) }
-            else { dlog("absorbed (\(capture.rawValue)): \(text)") }
+            else { dlogv("absorbed (\(capture.rawValue)): \(text)") }
         }
         engine.onDraft = { [weak self] slot, capture, text in
             self?.slotToPane[slot]?.receiveDraft(text, from: capture)

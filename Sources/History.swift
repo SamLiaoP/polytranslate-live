@@ -64,25 +64,34 @@ struct SessionRecord: Identifiable, Codable, Equatable {
 final class HistoryStore: ObservableObject {
     @Published private(set) var sessions: [SessionRecord] = []
 
-    private let dir: URL = {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("PolyTranslateLive/history", isDirectory: true)
-    }()
+    private let dir: URL
+    private let readRecords: @Sendable (URL) -> [SessionRecord]
+    private var loadGeneration = 0
+    /// 載入期間有異動的 id；合併時以記憶體為準，包含已刪除的紀錄。
+    private var changedDuringLoad: Set<UUID> = []
+    private var isLoading = false
     private let encoder: JSONEncoder = {
         let e = JSONEncoder()
         e.dateEncodingStrategy = .iso8601
         e.outputFormatting = [.prettyPrinted, .sortedKeys]
         return e
     }()
-    private let decoder: JSONDecoder = {
-        let d = JSONDecoder()
-        d.dateDecodingStrategy = .iso8601
-        return d
-    }()
-
-    init() {
+    init(directory: URL? = nil,
+         readRecords: @escaping @Sendable (URL) -> [SessionRecord] = { HistoryStore.readRecordsFromDisk($0) }) {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        self.dir = directory ?? base.appendingPathComponent("PolyTranslateLive/history", isDirectory: true)
+        self.readRecords = readRecords
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         load()
+    }
+
+    nonisolated private static func readRecordsFromDisk(_ dir: URL) -> [SessionRecord] {
+        // 每次載入各用一個 decoder，不在並行的背景工作之間共用。
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        return files.filter { $0.pathExtension == "json" }
+            .compactMap { try? decoder.decode(SessionRecord.self, from: Data(contentsOf: $0)) }
     }
 
     private func url(for id: UUID) -> URL { dir.appendingPathComponent("\(id.uuidString).json") }
@@ -96,20 +105,24 @@ final class HistoryStore: ObservableObject {
     }
 
     /// 在背景讀檔，不卡啟動；幾百場會議的 JSON 在主執行緒同步讀會讓視窗晚出來。
-    func load() {
-        let dir = self.dir, decoder = self.decoder
-        Task { [weak self] in
-            let loaded = await Task.detached(priority: .utility) { () -> [SessionRecord] in
-                let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
-                return files
-                    .filter { $0.pathExtension == "json" }
-                    .compactMap { try? decoder.decode(SessionRecord.self, from: Data(contentsOf: $0)) }
-                    .sorted { $0.startedAt > $1.startedAt }
-            }.value
-            guard let self else { return }
-            // 讀檔期間可能已經存了新的一筆，別把它蓋掉。
-            let fresh = sessions.filter { s in !loaded.contains { $0.id == s.id } }
-            sessions = (fresh + loaded).sorted { $0.startedAt > $1.startedAt }
+    @discardableResult
+    func load() -> Task<Void, Never> {
+        loadGeneration += 1
+        let generation = loadGeneration
+        changedDuringLoad.removeAll()
+        isLoading = true
+        let dir = self.dir, readRecords = self.readRecords
+        let reading = Task.detached(priority: .utility) { readRecords(dir) }
+        return Task { [weak self] in
+            let loaded = await reading.value
+            guard let self, generation == loadGeneration else { return }
+            // Set 查找避免舊版的雙層 contains（大量紀錄時為 O(n²)）。
+            let changed = changedDuringLoad
+            sessions = (sessions.filter { changed.contains($0.id) }
+                        + loaded.filter { !changed.contains($0.id) })
+                .sorted { $0.startedAt > $1.startedAt }
+            changedDuringLoad.removeAll()
+            isLoading = false
             dlog("history loaded: \(sessions.count) sessions")
         }
     }
@@ -118,6 +131,7 @@ final class HistoryStore: ObservableObject {
         guard record.lineCount > 0 || record.recording != nil else { return }
         do {
             try encoder.encode(record).write(to: url(for: record.id), options: .atomic)
+            if isLoading { changedDuringLoad.insert(record.id) }
             sessions.removeAll { $0.id == record.id }
             sessions.insert(record, at: 0)
             dlog("history saved: \(record.id) (\(record.lineCount) lines)")
@@ -127,6 +141,7 @@ final class HistoryStore: ObservableObject {
     }
 
     func delete(_ record: SessionRecord) {
+        if isLoading { changedDuringLoad.insert(record.id) }
         do { try FileManager.default.removeItem(at: url(for: record.id)) }
         catch { dlog("history delete failed: \(error.localizedDescription)") }
         if let rec = recordingURL(for: record) {
