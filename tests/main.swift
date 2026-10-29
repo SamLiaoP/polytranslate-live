@@ -213,6 +213,66 @@ do {
     }
 }
 
+// ---- HistoryStore：背景載入不能復活刪除的紀錄或蓋掉剛存的內容 ----
+MainActor.assumeIsolated {
+    func record(_ text: String, at seconds: Double) -> SessionRecord {
+        let date = Date(timeIntervalSince1970: seconds)
+        return SessionRecord(id: UUID(), startedAt: date, endedAt: date.addingTimeInterval(60),
+                             source: .system, target: zh,
+                             panes: [.init(language: en, target: zh,
+                                           lines: [.init(id: 0, time: date, original: text,
+                                                         translated: nil, source: .system)])])
+    }
+    func pump(until done: () -> Bool) {
+        let deadline = Date().addingTimeInterval(5)
+        while !done(), Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        check(done(), "history async work completed")
+    }
+    let deleted = record("delete me", at: 100)
+    let original = record("old text", at: 200)
+    let unchanged = record("keep me", at: 300)
+    let snapshot = [deleted, original, unchanged]
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("history-test-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let started = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    release.signal()
+    let store = HistoryStore(directory: dir, readRecords: { _ in
+        started.signal()
+        release.wait()
+        return snapshot
+    })
+    check(started.wait(timeout: .now() + 5) == .success, "history initial read started")
+    pump { store.sessions.count == 3 }
+
+    let loading = store.load()
+    check(started.wait(timeout: .now() + 5) == .success, "history reload snapshot in flight")
+    var updated = original
+    updated.panes[0].lines[0].original = "updated text"
+    let fresh = record("new session", at: 400)
+    store.save(updated)
+    store.save(fresh)
+    store.delete(deleted)
+    release.signal()
+    var completed = false
+    Task { @MainActor in await loading.value; completed = true }
+    pump { completed }
+    checkEqual(store.sessions.map(\.id), [fresh.id, unchanged.id, updated.id],
+               "history sorted; deleted snapshot stays deleted and new record survives")
+    checkEqual(store.sessions.last?.preview, "updated text", "history update wins over stale disk snapshot")
+
+    // 用真正的 JSON 讀取器驗證儲存與載入，而非只有測試用的背景快照。
+    let reloaded = HistoryStore(directory: dir)
+    let diskLoad = reloaded.load()
+    completed = false
+    Task { @MainActor in await diskLoad.value; completed = true }
+    pump { completed }
+    checkEqual(reloaded.sessions.map(\.id), [fresh.id, updated.id], "history JSON round trip")
+    checkEqual(reloaded.sessions.last?.preview, "updated text", "history updated text persisted")
+}
+
 // ---- L10n：四種介面語言都要有字串，缺的會退回英文 ----
 do {
     checkEqual(L10n.incompleteKeys(), [], "每個 key 都有四種語言")

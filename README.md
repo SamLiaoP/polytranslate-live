@@ -146,6 +146,11 @@ AGENTS.md / CLAUDE.md     instructions for AI coding assistants
 - Occasionally the first syllable after a language switch is glued to the previous sentence by the recognizer (e.g. Japanese 「皆さん」→「なさん」).
 - Up to 4 panes. macOS only.
 
+### Authors
+
+- **Sam Liao** — creator and maintainer.
+- **OpenAI Codex** — AI coding collaborator; history-loading reliability and privacy logging fixes.
+
 ### Credits
 
 Written from scratch in Swift. Ideas and API usage patterns were learned from these MIT-licensed projects:
@@ -252,6 +257,11 @@ say -v Samantha -o /tmp/en.wav --data-format=LEI16@16000 "Good morning everyone.
 - 一句話要等講者停頓才會定稿。
 - 語言切換的第一個字偶爾會被辨識器黏到前一句，例如日文「皆さん」變成「なさん」。
 - 最多四欄。只支援 macOS。
+
+### 作者
+
+- **Sam Liao** — 專案建立者與維護者。
+- **OpenAI Codex** — AI 程式協作作者；改善歷史紀錄載入的可靠性與日誌隱私。
 
 ### 致謝
 
