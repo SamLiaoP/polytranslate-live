@@ -42,7 +42,10 @@ Recording again. Tell the user this is expected.
 
 Layout check without screen recording: `build/PolyTranslateLive.app/Contents/MacOS/PolyTranslateLive --snapshot 480x300 /tmp/shot.png`
 opens a window of that size with sample subtitles, renders it to PNG after two seconds and quits (does not touch the saved
-window frame). Use 1240x780, 720x450 and 480x300 to see the regular, compact and mini layouts (`Layout` in ContentView.swift).
+window frame). Append `running` or `paused` as a fourth argument to render the top bar as it looks during a session
+(timer, pause button, REC badge) without opening any audio source; `history` opens the most recent saved session instead;
+`settings` renders the Settings sheet. Add `--ui en` (or `zh-Hant`, `ja`, `ko`) anywhere on the command line to render in that
+interface language without changing the user's setting. The README screenshots in `docs/screenshots/` are made this way. Use 1240x780, 720x450 and 480x300 to see the regular, compact and mini layouts (`Layout` in ContentView.swift).
 
 
 ```bash
@@ -53,7 +56,9 @@ sleep 20; tail -20 ~/Library/Logs/PolyTranslateLive.log
 
 Expected log lines: `lane ready`, `[P1] final(system): …`, `[P1] translated: …`, `history saved`.
 The test feed stops by itself. Add `--test-source mixed` (or `system` / `microphone`) to override the audio source for
-that run only (nothing is written back to the user's settings); in mixed mode the wav is fed into both lanes, which
+that run only (nothing is written back to the user's settings); add `--test-pause 15:25` to pause at 15 s and resume at
+25 s (expect `paused`, `resumed after 10 s paused in total`, a shorter recording and `pausedSeconds` in the JSON);
+in mixed mode the wav is fed into both lanes, which
 exercises the cross-source duplicate filter (`Sources/Dedup.swift`, expect `dropped duplicate from microphone` lines). Logs live at `~/Library/Logs/PolyTranslateLive.log`.
 
 The log normally records only events (lanes, arbiter decisions, translation errors), **not what was said**.

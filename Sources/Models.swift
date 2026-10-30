@@ -236,12 +236,17 @@ final class AppSettings: ObservableObject {
             d = AppSettingsData()
         }
         let args = CommandLine.arguments
+        var overridden = false
         if let i = args.firstIndex(of: "--test-source"), i + 1 < args.count, let k = AudioSourceKind(rawValue: args[i + 1]) {
             d.source = k
-            readOnly = true
-        } else {
-            readOnly = false
+            overridden = true
         }
+        // `--ui en|zh-Hant|ja|ko`：截圖用，暫時換介面語言，同樣不寫回設定。
+        if let i = args.firstIndex(of: "--ui"), i + 1 < args.count, let l = UILanguage(rawValue: args[i + 1]) {
+            d.uiLanguage = l
+            overridden = true
+        }
+        readOnly = overridden
         data = d
         L10n.language = data.uiLanguage
     }

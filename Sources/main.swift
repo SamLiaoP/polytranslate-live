@@ -49,17 +49,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let dims = args[i + 1].split(separator: "x").compactMap { Double($0) }
         guard dims.count == 2 else { return false }
         let out = URL(fileURLWithPath: args[i + 2])
+        if i + 3 < args.count, ["running", "paused"].contains(args[i + 3]) {
+            model.previewRunningForSnapshot(paused: args[i + 3] == "paused")
+        }
+        let mode = i + 3 < args.count ? args[i + 3] : ""
+        // 側欄用假資料：截圖會放上 README，不能露出使用者真正的會議內容。
+        model.history.replaceForSnapshot(Self.sampleSessions())
+        if mode == "history" { model.selectedSession = model.history.sessions.first }
+        if mode == "settings" { model.showSettings = true }
         win.setContentSize(NSSize(width: dims[0], height: dims[1]))
         win.center()
-        let samples = ["Good morning everyone, today we review the quarterly results.",
-                       "The deployment practitioner course is more like a guideline than a technical manual."]
+        let samples: [(String, CaptureKind)] = [
+            ("Good morning everyone, today we review the quarterly results.", .system),
+            ("Revenue grew twelve percent compared to last quarter, mostly from the enterprise tier.", .system),
+            ("Can you share the numbers for the APAC region as well?", .microphone),
+            ("Sure, the deployment practitioner course is more like a guideline than a technical manual.", .system),
+        ]
         for pane in model.panes {
             pane.sessionStarted()
-            for s in samples { pane.receiveFinal(s, from: .system) }
+            for (s, k) in samples { pane.receiveFinal(s, from: k) }
             pane.receiveDraft("So what I'm going to do is share the presentation", from: .system)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-            guard let self, let view = self.window?.contentView,
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            // 設定頁是 sheet（另一個視窗），要截它的 contentView 而不是主視窗的。
+            guard let self, let win = self.window,
+                  let view = (mode == "settings" ? win.attachedSheet?.contentView : nil) ?? win.contentView,
                   let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { exit(2) }
             view.cacheDisplay(in: view.bounds, to: rep)
             if let data = rep.representation(using: .png, properties: [:]) { try? data.write(to: out) }
@@ -67,6 +81,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             exit(0)
         }
         return true
+    }
+
+    /// 截圖用的假歷史紀錄：幾場不同日期、長度的英文會議。
+    private static func sampleSessions() -> [SessionRecord] {
+        let zh = LanguageCatalog.language("zh-Hant"), en = LanguageCatalog.language("en")
+        let cal = Calendar.current
+        let meetings: [(daysAgo: Int, hour: Int, minutes: Int, lines: [(String, String, CaptureKind)])] = [
+            (0, 10, 52, [("Good morning everyone, today we review the quarterly results.", "大家早安，今天我們回顧季度業績。", .system),
+                         ("Revenue grew twelve percent compared to last quarter.", "營收比上一季成長了 12%。", .system),
+                         ("Can you share the numbers for the APAC region as well?", "可以也分享一下亞太地區的數字嗎？", .microphone),
+                         ("Sure, APAC is up eight percent, mostly from new enterprise accounts.", "當然，亞太成長 8%，主要來自新的企業客戶。", .system),
+                         ("Let's move on to the hiring plan for the engineering team.", "接下來談工程團隊的徵才計畫。", .system)]),
+            (1, 15, 27, [("Let's go through the open issues before the release.", "發布前先把未解決的問題過一遍。", .system),
+                         ("The login bug is fixed and waiting for review.", "登入的問題修好了，等審查。", .microphone),
+                         ("Great, then we can ship on Thursday.", "很好，那我們週四就能出。", .system)]),
+            (3, 9, 41, [("Welcome to the onboarding session for new partners.", "歡迎參加新合作夥伴的入門說明。", .system),
+                        ("Today we cover the deployment guideline and the support process.", "今天會講部署指南和支援流程。", .system)]),
+            (6, 16, 8, [("Do you need any help with the proposal?", "提案需要幫忙嗎？", .microphone),
+                        ("I think the budget section still needs numbers.", "我覺得預算那段還缺數字。", .system)]),
+        ]
+        return meetings.map { m in
+            let start = cal.date(bySettingHour: m.hour, minute: 0, second: 0, of: cal.date(byAdding: .day, value: -m.daysAgo, to: Date())!)!
+            let lines = m.lines.enumerated().map { i, l in
+                SessionRecord.Line(id: i, time: start.addingTimeInterval(Double(i) * 47), original: l.0, translated: l.1, source: l.2)
+            }
+            return SessionRecord(id: UUID(), startedAt: start, endedAt: start.addingTimeInterval(Double(m.minutes * 60)),
+                                 source: .mixed, target: zh, panes: [.init(language: en, target: zh, lines: lines)], recording: nil)
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

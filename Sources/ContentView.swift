@@ -42,17 +42,18 @@ struct Layout: Equatable {
     var outerPad: CGFloat { pick(20, 12, 6) }
     var paneGap: CGFloat { pick(16, 10, 6) }
     var cardRadius: CGFloat { pick(18, 14, 10) }
-    var startSize: CGFloat { pick(48, 34, 26) }
-    var timerFont: CGFloat { pick(26, 17, 13) }
+    var startSize: CGFloat { pick(34, 30, 26) }
+    var timerFont: CGFloat { pick(18, 16, 13) }
     var iconButton: CGFloat { pick(34, 28, 24) }
-    var topPad: CGFloat { pick(34, 30, 26) }     // 紅綠燈佔的高度
+    var topPad: CGFloat { pick(30, 28, 26) }     // 紅綠燈佔的高度
     var headerFont: CGFloat { pick(14, 12, 11) }
     var panePadH: CGFloat { pick(18, 12, 8) }
     var panePadV: CGFloat { pick(16, 10, 6) }
     var lineGap: CGFloat { pick(18, 12, 8) }
     var pillHeight: CGFloat { pick(30, 26, 22) }
-    /// 標題與控制列只在正常大小顯示；縮小時控制列收進頂部的選單。
-    var showTitle: Bool { density == .regular }
+    /// 頂部只有一排：正常大小時目標語言、聲音來源、新增欄位直接排在這一排右側；縮小時收進選單。
+    /// 標題只在夠寬時顯示，字幕才是重點，上面不佔第二排。
+    var showTitle: Bool { density == .regular && size.width >= 1400 }
     var showControlRow: Bool { density == .regular }
     var isMini: Bool { density == .mini }
 }
@@ -72,6 +73,13 @@ struct FillLayout: SwiftUI.Layout {   // 這個檔案裡的 `Layout` 是上面�
             s.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(bounds.size))
         }
     }
+}
+
+/// 讓 `.labelStyle(條件 ? A : B)` 能寫在同一行（內建的 label style 型別不同，不能直接三元運算）。
+struct AnyLabelStyle: LabelStyle {
+    private let make: (Configuration) -> AnyView
+    init<S: LabelStyle>(_ style: S) { make = { AnyView(style.makeBody(configuration: $0)) } }
+    func makeBody(configuration: Configuration) -> some View { make(configuration) }
 }
 
 /// 文字可選取在 macOS 上每一行都多一層排版成本，即時字幕只在停止後才開；歷史頁一直開。
@@ -114,7 +122,6 @@ struct ContentView: View {
                         if let session = model.selectedSession {
                             HistoryDetail(record: session, settings: settings)
                         } else {
-                            if layout.showControlRow { ControlRow(settings: settings) }
                             if let err = model.globalError {
                                 Banner(text: err, kind: .error, dismiss: { model.globalError = nil })
                                     .padding(.horizontal, layout.outerPad)
@@ -302,19 +309,25 @@ private struct HistoryDetail: View {
                         .font(.system(size: 12)).foregroundStyle(.tertiary)
                 }
                 Spacer()
+                // 視窗縮小時只留圖示，把寬度讓給日期標題；滑鼠停上去還是看得到文字。
+                let iconOnly = layout.density != .regular
                 Button { model.copyToPasteboard(record) } label: {
                     Label(tr("history.copy"), systemImage: "doc.on.doc").font(.system(size: 12, weight: .medium))
-                        .padding(.horizontal, 12).frame(height: 30)
+                        .labelStyle(iconOnly ? AnyLabelStyle(.iconOnly) : AnyLabelStyle(.titleAndIcon))
+                        .padding(.horizontal, iconOnly ? 9 : 12).frame(height: 30)
                         .background(Capsule().fill(Palette.pill))
                 }
                 .buttonStyle(.plain)
+                .help(tr("history.copy"))
                 if model.history.recordingURL(for: record) != nil {
                     Button { model.saveRecording(record) } label: {
                         Label(tr("recording.save"), systemImage: "arrow.down.circle").font(.system(size: 12, weight: .medium))
-                            .padding(.horizontal, 12).frame(height: 30)
+                            .labelStyle(iconOnly ? AnyLabelStyle(.iconOnly) : AnyLabelStyle(.titleAndIcon))
+                            .padding(.horizontal, iconOnly ? 9 : 12).frame(height: 30)
                             .background(Capsule().fill(Palette.pill))
                     }
                     .buttonStyle(.plain)
+                    .help(tr("recording.save"))
                     .contextMenu { Button(tr("recording.reveal")) { model.revealRecording(record) } }
                 }
                 Button(role: .destructive) { model.sessionPendingDelete = record } label: {
@@ -388,80 +401,106 @@ private struct TopBar: View {
     @Environment(\.layout) private var layout
     @ObservedObject var settings: AppSettings
 
+    /// 一排從左到右：側欄開關、開始／停止、暫停、計時、REC；右端是目標語言、聲音來源、新增欄位、設定。
     var body: some View {
-        HStack {
-            // 左：側欄開關 + 標題（縮小時只剩開關）
-            HStack(spacing: 10) {
-                if !layout.isMini {
-                    RoundIconButton(symbol: "sidebar.left", help: tr("history.toggle")) {
-                        settings.data.sidebarVisible.toggle()
-                    }
-                }
-                if layout.showTitle {
-                    Image(systemName: "captions.bubble.fill")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(Palette.brand)
-                    Text(tr("app.title"))
-                        .font(.system(size: 20, weight: .semibold, design: .rounded))
+        HStack(spacing: layout.isMini ? 8 : 12) {
+            if !layout.isMini {
+                RoundIconButton(symbol: "sidebar.left", help: tr("history.toggle")) {
+                    settings.data.sidebarVisible.toggle()
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            // 中：開始鈕 + 計時
-            HStack(spacing: layout.isMini ? 8 : 16) {
-                StartButton(settings: settings)
-                if model.isRunning {
-                    TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                        Text(elapsed(at: ctx.date))
-                            .font(.system(size: layout.timerFont, weight: .medium, design: .rounded))
-                            .monospacedDigit()
-                            .lineLimit(1)
-                            .fixedSize()   // 四分之一螢幕時中間只分到三分之一寬，不固定會被折成兩行
-                    }
-                    if model.isRecording {
-                        HStack(spacing: 4) {
-                            Circle().fill(Color.red).frame(width: 6, height: 6)
-                            if !layout.isMini {
-                                Text(tr("recording.badge")).font(.system(size: 10, weight: .bold)).tracking(1)
-                            }
-                        }
-                        .foregroundStyle(Color.red)
-                        .padding(.horizontal, layout.isMini ? 5 : 8).frame(height: layout.isMini ? 16 : 22)
-                        .background(Capsule().fill(Color.red.opacity(0.15)))
-                        .help(tr("recording.badge.help"))
-                        .accessibilityLabel(tr("recording.badge.help"))
-                    }
-                } else {
-                    // 閒置時不要每秒重繪。
-                    Text("00:00:00")
+            StartButton(settings: settings)
+            if model.isRunning {
+                PauseButton()
+                TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                    Text(Self.clock(model.elapsedSeconds(at: ctx.date)))
                         .font(.system(size: layout.timerFont, weight: .medium, design: .rounded))
                         .monospacedDigit()
                         .lineLimit(1)
-                        .fixedSize()
-                        .foregroundStyle(.secondary)
+                        .fixedSize()   // 四分之一螢幕時不固定會被折成兩行
+                        .foregroundStyle(model.isPaused ? .secondary : .primary)
                 }
+                if model.isRecording {
+                    HStack(spacing: 4) {
+                        Circle().fill(Color.red).frame(width: 6, height: 6)
+                        if !layout.isMini {
+                            Text(tr("recording.badge")).font(.system(size: 10, weight: .bold)).tracking(1)
+                        }
+                    }
+                    .foregroundStyle(Color.red)
+                    .opacity(model.isPaused ? 0.45 : 1)
+                    .padding(.horizontal, layout.isMini ? 5 : 8).frame(height: layout.isMini ? 16 : 22)
+                    .background(Capsule().fill(Color.red.opacity(0.15)))
+                    .help(tr("recording.badge.help"))
+                    .accessibilityLabel(tr("recording.badge.help"))
+                }
+            } else {
+                // 閒置時不要每秒重繪。
+                Text("00:00:00")
+                    .font(.system(size: layout.timerFont, weight: .medium, design: .rounded))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .fixedSize()
+                    .foregroundStyle(.secondary)
             }
-            .frame(maxWidth: .infinity)
-            .layoutPriority(1)   // 中間的開始鈕＋計時先拿夠寬度，左右兩組再分剩下的
 
-            // 右：縮小時控制列收進這個選單；設定
+            Spacer(minLength: 8)
+            if layout.showTitle {
+                HStack(spacing: 8) {
+                    Image(systemName: "captions.bubble.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Palette.brand)
+                    Text(tr("app.title"))
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+            }
+
+            // 右：縮小時目標語言／來源／新增欄位收進一個選單；設定
             HStack(spacing: layout.isMini ? 6 : 10) {
-                if !layout.showControlRow && model.selectedSession == nil {
-                    OptionsMenu(settings: settings)
+                if model.selectedSession == nil {
+                    if layout.showControlRow { ControlRow(settings: settings) } else { OptionsMenu(settings: settings) }
                 }
                 RoundIconButton(symbol: "gearshape.fill", help: tr("settings")) { model.showSettings = true }
             }
-            .frame(maxWidth: .infinity, alignment: .trailing)
+            .layoutPriority(1)   // 右側的選單不能被壓扁；寬度不夠時犧牲中間的標題
         }
         .padding(.horizontal, layout.outerPad + 4)
         .padding(.top, layout.topPad)
-        .padding(.bottom, layout.isMini ? 6 : 10)
+        .padding(.bottom, layout.isMini ? 6 : 8)
     }
 
-    private func elapsed(at now: Date) -> String {
-        guard let start = model.startedAt else { return "00:00:00" }
-        let s = Int(now.timeIntervalSince(start))
+    static func clock(_ seconds: TimeInterval) -> String {
+        let s = Int(seconds)
         return String(format: "%02d:%02d:%02d", s / 3600, (s / 60) % 60, s % 60)
+    }
+}
+
+/// 暫停／繼續。暫停中變成琥珀色的播放鍵，一看就知道按下去會繼續。
+private struct PauseButton: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.layout) private var layout
+    @State private var hover = false
+
+    var body: some View {
+        Button { model.togglePause() } label: {
+            Image(systemName: model.isPaused ? "play.fill" : "pause.fill")
+                .font(.system(size: layout.startSize * 0.36, weight: .bold))
+                .foregroundStyle(model.isPaused ? Color.black.opacity(0.8) : Color.white)
+                .offset(x: model.isPaused ? layout.startSize / 24 : 0)
+                .frame(width: layout.startSize, height: layout.startSize)
+                .background(Circle().fill(model.isPaused ? Color(red: 0.98, green: 0.76, blue: 0.3)
+                                                         : (hover ? Palette.pillHover : Palette.pill)))
+                .scaleEffect(hover ? 1.05 : 1)
+                .animation(.spring(duration: 0.25), value: hover)
+                .animation(.spring(duration: 0.25), value: model.isPaused)
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut("p", modifiers: [.command])
+        .onHover { hover = $0 }
+        .help(model.isPaused ? tr("resume.help") : tr("pause.help"))
+        .accessibilityLabel(model.isPaused ? tr("resume") : tr("pause"))
     }
 }
 
@@ -579,51 +618,40 @@ private struct ControlRow: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var settings: AppSettings
 
+    /// 排在頂部列右側，所以沒有文字標籤（滑鼠停上去有說明），也不佔第二排。
     var body: some View {
-        HStack(spacing: 12) {
-            HStack(spacing: 8) {
-                Text(tr("translate.to")).font(.system(size: 12, weight: .medium)).foregroundStyle(.tertiary)
-                PillMenu(title: model.target.displayName, symbol: "character.bubble.fill") {
-                    ForEach(model.availableLanguages) { lang in
-                        Button(lang.displayName) { model.setTarget(lang.id) }
-                    }
+        HStack(spacing: 8) {
+            PillMenu(title: model.target.name, symbol: "character.bubble.fill") {
+                ForEach(model.availableLanguages) { lang in
+                    Button(lang.displayName) { model.setTarget(lang.id) }
                 }
             }
+            .help(tr("translate.to"))
 
-            HStack(spacing: 8) {
-                Text(tr("audio.source")).font(.system(size: 12, weight: .medium)).foregroundStyle(.tertiary)
-                PillMenu(title: settings.data.source.shortLabel, symbol: settings.data.source.symbol) {
-                    Picker(tr("audio.source"), selection: $settings.data.source) {
-                        ForEach(AudioSourceKind.allCases) { k in
-                            Label(k.label, systemImage: k.symbol).tag(k)
-                        }
+            PillMenu(title: settings.data.source.shortLabel, symbol: settings.data.source.symbol) {
+                Picker(tr("audio.source"), selection: $settings.data.source) {
+                    ForEach(AudioSourceKind.allCases) { k in
+                        Label(k.label, systemImage: k.symbol).tag(k)
                     }
-                    .pickerStyle(.inline)
-                    .labelsHidden()
                 }
+                .pickerStyle(.inline)
+                .labelsHidden()
             }
-            .padding(.leading, 8)
-
-            Spacer()
+            .help(tr("audio.source"))
 
             Button { model.addPane() } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "plus").font(.system(size: 11, weight: .bold))
-                    Text(tr("pane.add")).font(.system(size: 13, weight: .medium))
-                }
-                .padding(.horizontal, 12)
-                .frame(height: 30)
-                .background(Capsule().fill(Palette.pill))
+                Image(systemName: "plus").font(.system(size: 12, weight: .bold))
+                    .frame(width: 30, height: 30)
+                    .background(Circle().fill(Palette.pill))
             }
             .buttonStyle(.plain)
             .disabled(!model.canAddPane)
             .opacity(model.canAddPane ? 1 : 0.4)
             .help(model.panes.count >= AppModel.maxPanes ? trf("pane.add.max", AppModel.maxPanes) : tr("pane.add.help"))
+            .accessibilityLabel(tr("pane.add"))
         }
         .disabled(model.isRunning)
         .opacity(model.isRunning ? 0.75 : 1)
-        .padding(.horizontal, 24)
-        .padding(.bottom, 16)
     }
 }
 
@@ -912,7 +940,7 @@ private struct PillMenu<Content: View>: View {
                 if let symbol {
                     Image(systemName: symbol).font(.system(size: layout.isMini ? 9 : 11, weight: .semibold))
                 }
-                Text(title).font(.system(size: layout.isMini ? 11 : 13, weight: .medium)).lineLimit(1)
+                Text(title).font(.system(size: layout.isMini ? 11 : 13, weight: .medium)).lineLimit(1).fixedSize()
                 Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(.tertiary)
             }
             .padding(.horizontal, layout.isMini ? 8 : 12)

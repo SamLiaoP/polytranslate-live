@@ -327,6 +327,28 @@ MainActor.assumeIsolated {
     check(!FileManager.default.fileExists(atPath: emptyFile.path), "空場次的 save 清掉檢查點檔")
 }
 
+// ---- AudioHub：暫停時不分送；SessionRecord 的長度扣掉暫停 ----
+do {
+    let hub = AudioHub()
+    nonisolated(unsafe) var got = 0
+    let id = hub.subscribe(.system) { got += $0.count }
+    hub.inject(.system, [0, 0, 0])
+    hub.paused = true
+    hub.inject(.system, [0, 0, 0])
+    hub.paused = false
+    hub.inject(.system, [0])
+    hub.unsubscribe(id)
+    checkEqual(got, 4, "暫停期間的樣本被丟掉，恢復後照常")
+
+    let date = Date(timeIntervalSince1970: 0)
+    var rec = SessionRecord(id: UUID(), startedAt: date, endedAt: date.addingTimeInterval(600), source: .system, target: zh,
+                            panes: [], pausedSeconds: 125)
+    checkEqual(Int(rec.duration), 475, "duration 扣掉暫停")
+    checkEqual(rec.durationText, "7:55", "durationText 用扣掉暫停後的長度")
+    rec.pausedSeconds = nil
+    checkEqual(Int(rec.duration), 600, "沒有暫停就是全長")
+}
+
 // ---- SessionRecorder：分段寫檔，沒正常停止的檔也播得出來 ----
 do {
     func awaitValue<T>(_ op: @escaping @Sendable () async -> T) -> T {

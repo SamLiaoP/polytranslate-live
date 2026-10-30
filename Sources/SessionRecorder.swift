@@ -40,6 +40,7 @@ final class SessionRecorder: @unchecked Sendable {
     private var frames: Int64 = 0
     private var padded = 0
     private var dropped = 0
+    private var paused = false
 
     init(url: URL, fragmentSeconds: Double = SessionRecorder.defaultFragmentSeconds) {
         self.url = url
@@ -133,6 +134,24 @@ final class SessionRecorder: @unchecked Sendable {
         }
     }
 
+    /// 暫停：timer 停下來，不寫檔也不補靜音；繼續後時間戳接著數，檔案裡沒有空白段。
+    func pause() {
+        queue.async { [self] in
+            guard !paused, let timer else { return }
+            timer.suspend()
+            paused = true
+        }
+    }
+
+    func resume() {
+        queue.async { [self] in
+            guard paused, let timer else { return }
+            for i in sources.indices { sources[i].queue.removeAll() }
+            timer.resume()
+            paused = false
+        }
+    }
+
     /// 寫檔失敗就停：已寫的分段仍在檔案裡，之後 stop() 只是不再收尾。
     private func fail(_ why: String) {
         dlog("recording write failed: \(why); recording stopped")
@@ -166,6 +185,7 @@ final class SessionRecorder: @unchecked Sendable {
         subscriptions = []
         return await withCheckedContinuation { cont in
             queue.async { [self] in
+                if paused { timer?.resume(); paused = false }   // 暫停中的 timer 不能直接 cancel／釋放
                 timer?.cancel()
                 timer = nil
                 pump(drain: true)

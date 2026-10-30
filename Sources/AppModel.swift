@@ -18,6 +18,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var isStarting = false
     @Published private(set) var startedAt: Date?
+    /// 暫停中：聲音不送進辨識和錄音，計時停住；繼續後接在同一場、同一個錄音檔。
+    @Published private(set) var isPaused = false
+    private var pausedAt: Date?
+    private var pausedTotal: TimeInterval = 0
     /// 這場 session 有沒有在錄音（設定開著且錄音器成功啟動）。
     @Published private(set) var isRecording = false
     @Published var globalError: String?
@@ -226,8 +230,72 @@ final class AppModel: ObservableObject {
         sessionID = UUID()
         if settings.data.recordAudio { startRecording(captures: captures) }
         startedAt = Date()
+        pausedTotal = 0
+        pausedAt = nil
+        isPaused = false
+        hub.paused = false
         isRunning = true
         startCheckpoints()
+        scheduleTestPause()
+    }
+
+    /// `--test-pause 15:25`（只在測試模式有用）：開始後第 15 秒暫停、第 25 秒繼續，驗證暫停／繼續整條管線。
+    private func scheduleTestPause() {
+        let args = CommandLine.arguments
+        guard testWAV != nil, let i = args.firstIndex(of: "--test-pause"), i + 1 < args.count else { return }
+        let parts = args[i + 1].split(separator: ":").compactMap { Double($0) }
+        guard parts.count == 2, parts[1] > parts[0] else { return }
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(parts[0]))
+            guard let self, isRunning, !isPaused else { return }
+            togglePause()
+            try? await Task.sleep(for: .seconds(parts[1] - parts[0]))
+            guard isRunning, isPaused else { return }
+            togglePause()
+        }
+    }
+
+    /// `--snapshot … running|paused` 用：不開任何來源，只把頂部列切成進行中／暫停的樣子好截圖。
+    func previewRunningForSnapshot(paused: Bool) {
+        startedAt = Date().addingTimeInterval(-(12 * 60 + 34))
+        isRunning = true
+        isRecording = true
+        if paused { pausedAt = Date(); isPaused = true }
+    }
+
+    /// 計時器顯示的秒數：扣掉暫停的時間。
+    func elapsedSeconds(at now: Date) -> TimeInterval {
+        guard let start = startedAt else { return 0 }
+        var t = now.timeIntervalSince(start) - pausedTotal
+        if let pausedAt { t -= now.timeIntervalSince(pausedAt) }
+        return max(0, t)
+    }
+
+    /// 到目前為止暫停了多久（含正在進行的這一次）。
+    private var pausedSoFar: TimeInterval {
+        pausedTotal + (pausedAt.map { Date().timeIntervalSince($0) } ?? 0)
+    }
+
+    /// 暫停／繼續（⌘P）。暫停只是把聲音擋在門口：擷取、辨識器、錄音檔都還開著，所以繼續是瞬間的，
+    /// 字幕和錄音接在同一場、同一個檔案後面；錄音檔裡不會留下暫停期間的空白。
+    func togglePause() {
+        guard isRunning else { return }
+        if isPaused {
+            if let p = pausedAt { pausedTotal += Date().timeIntervalSince(p) }
+            pausedAt = nil
+            hub.paused = false
+            recorder?.resume()
+            isPaused = false
+            for p in panes { p.setStatus(tr("status.listening")) }
+            dlog("resumed after \(String(format: "%.0f", pausedTotal)) s paused in total")
+        } else {
+            pausedAt = Date()
+            hub.paused = true
+            recorder?.pause()
+            isPaused = true
+            for p in panes { p.setStatus(tr("status.paused")) }
+            dlog("paused")
+        }
     }
 
     /// 錄音起不來不該讓整場翻譯跟著失敗：只顯示錯誤，session 照常進行。
@@ -252,6 +320,7 @@ final class AppModel: ObservableObject {
             waited += 1
         }
         guard isRunning else { return }
+        if isPaused { togglePause() }   // 先把門打開，引擎才收得到最後一句、錄音才能收尾
         checkpointTask?.cancel()
         checkpointTask = nil
         testFeedTask?.cancel()
@@ -278,6 +347,7 @@ final class AppModel: ObservableObject {
         }
         let record = makeRecord(endedAt: Date(), recording: recordingName, interrupted: nil)
         startedAt = nil
+        pausedTotal = 0
         history.save(record)
         if settings.data.saveTranscript, record.lineCount > 0 { saveTranscript(record) }
     }
@@ -310,7 +380,8 @@ final class AppModel: ObservableObject {
                                    lines: p.lines.map { SessionRecord.Line(id: $0.id, time: $0.timestamp, original: $0.original,
                                                                             translated: $0.translated, source: $0.source) })
             },
-            recording: recording, interrupted: interrupted)
+            recording: recording, interrupted: interrupted,
+            pausedSeconds: pausedSoFar > 0 ? pausedSoFar : nil)
     }
 
     func copyToPasteboard(_ record: SessionRecord) {

@@ -225,7 +225,14 @@ final class AudioHub {
     private var mic: MicrophoneCapture?
     private let lock = NSLock()
     private var subscribers: [UUID: (kind: CaptureKind, callback: ([Float]) -> Void)] = [:]
+    private var _paused = false
     var onSystemAudioError: ((Error) -> Void)?
+
+    /// 暫停：所有樣本直接丟掉，辨識和錄音都收不到聲音；擷取本身不中斷，所以繼續是瞬間的。
+    var paused: Bool {
+        get { lock.withLock { _paused } }
+        set { lock.withLock { _paused = newValue } }
+    }
 
     func subscribe(_ kind: CaptureKind, _ callback: @escaping ([Float]) -> Void) -> UUID {
         let id = UUID()
@@ -241,7 +248,7 @@ final class AudioHub {
     func inject(_ kind: CaptureKind, _ samples: [Float]) { fanOut(kind, samples) }
 
     private func fanOut(_ kind: CaptureKind, _ samples: [Float]) {
-        let targets = lock.withLock { subscribers.values.filter { $0.kind == kind }.map(\.callback) }
+        let targets = lock.withLock { _paused ? [] : subscribers.values.filter { $0.kind == kind }.map(\.callback) }
         for cb in targets { cb(samples) }
     }
 

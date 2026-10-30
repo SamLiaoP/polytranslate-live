@@ -26,8 +26,10 @@ struct SessionRecord: Identifiable, Codable, Equatable {
     /// true = 這是 session 進行中每 30 秒存的檢查點。App 正常停止會蓋成 nil；
     /// 還留著 true 就表示那場沒有正常結束（當機、被強制結束、斷電），內容只到 `endedAt`。
     var interrupted: Bool? = nil
+    /// 暫停累計的秒數；`duration` 會扣掉。
+    var pausedSeconds: Double? = nil
 
-    var duration: TimeInterval { endedAt.timeIntervalSince(startedAt) }
+    var duration: TimeInterval { max(0, endedAt.timeIntervalSince(startedAt) - (pausedSeconds ?? 0)) }
     var lineCount: Int { panes.reduce(0) { $0 + $1.lines.count } }
     /// DateFormatter 很貴，側欄每一列每次重繪都 new 一個會卡；每種介面語言各快取一個。
     private static let titleFormatters: [UILanguage: DateFormatter] = {
@@ -145,6 +147,13 @@ final class HistoryStore: ObservableObject {
         } catch {
             dlog("history save failed: \(error.localizedDescription)")
         }
+    }
+
+    /// 截圖用：把側欄換成假資料，之後背景載入的結果也不會蓋回來。使用者真正的紀錄不受影響。
+    func replaceForSnapshot(_ records: [SessionRecord]) {
+        loadGeneration += 1
+        isLoading = false
+        sessions = records.sorted { $0.startedAt > $1.startedAt }
     }
 
     /// session 進行中的檢查點：只寫檔、不動 `sessions`（側欄不列進行中的場次），停止時 `save` 會蓋掉同一個檔。
