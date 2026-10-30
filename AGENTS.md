@@ -66,8 +66,21 @@ The file rotates to `.log.1` once it exceeds 5 MB.
 ./build.sh test        # compiles Sources/ (minus main.swift) + tests/main.swift with swiftc and runs it
 ```
 
-Covers `ScriptDetector`, `LanguageMap` and the `Arbiter` (confidence vote, overlap trimming, `flush()` on stop).
-No XCTest; it is a plain executable that exits non-zero on failure. Add cases to `tests/main.swift`.
+Covers `ScriptDetector`, `LanguageMap`, the `Arbiter` (confidence vote, overlap trimming, `flush()` on stop), `Dedup`,
+`Timeline`, `HistoryStore` (background load races, checkpoints) and `SessionRecorder` (a fragmented file is readable
+before `stop()`; takes about 5 s of wall time). No XCTest; it is a plain executable that exits non-zero on failure.
+Add cases to `tests/main.swift`.
+
+Crash-durability check (what a force quit leaves behind):
+
+```bash
+build/PolyTranslateLive.app/Contents/MacOS/PolyTranslateLive --test-wav /tmp/long.wav --test-source mixed &   # a wav longer than 40 s
+sleep 40; kill -9 %1
+ls -t ~/Library/Application\ Support/PolyTranslateLive/history | head -2     # <id>.json with "interrupted" : true, plus <id>.m4a
+afinfo ~/Library/Application\ Support/PolyTranslateLive/history/<id>.m4a     # plays; duration ≈ seconds before the kill
+```
+
+Delete the test session afterwards (JSON, .m4a and the Markdown transcript in `~/Documents/PolyTranslate Live/` if transcripts are on).
 
 ## Where things are
 
@@ -79,7 +92,8 @@ No XCTest; it is a plain executable that exits non-zero on failure. Add cases to
 | `Sources/L10n.swift` | UI string table in English, Traditional Chinese, Japanese and Korean (one array per key, in that order); add keys here, never hard-code UI text |
 | `tests/main.swift` | unit tests for the pure logic (run with `./build.sh test`) |
 | `Sources/TaiwanWording.swift` | generated from OpenCC TWPhrases/TWVariants (Apache-2.0, `third_party/OpenCC-LICENSE.txt`) plus a few app rules; applied to zh-Hant translations |
-| `Sources/SessionRecorder.swift` | writes each session's audio to `<session id>.m4a` next to the history JSON; subscribes to `AudioHub`, sums sources on a 250 ms tick |
+| `Sources/SessionRecorder.swift` | writes each session's audio to `<session id>.m4a` next to the history JSON; subscribes to `AudioHub`, sums sources on a 250 ms tick. Uses `AVAssetWriter` with `movieFragmentInterval` = 10 s, so the file stays playable up to the last fragment if the app is killed (the old `AVAudioFile` path wrote the index only on close and lost a 95-minute meeting on 2026-10-28) |
+| `Sources/History.swift` | `SessionRecord` (JSON) and `HistoryStore`. While a session runs, `AppModel` writes a checkpoint every 30 s (`checkpoint()`: file only, not the sidebar) with `interrupted: true`; a normal Stop overwrites it with `interrupted` absent. A record still marked interrupted at the next launch is shown with a warning icon and banner |
 | `Sources/Models.swift` | settings (`UserDefaults` key `polytranslate.settings.v1`), `LanguageCatalog` |
 | `Resources/Info.plist` | permission usage strings, bundle ID `dev.samliao.polytranslatelive` |
 | `tools/make_icon.swift` | regenerates the icon (no SF Symbols — Apple's license forbids them in icons) |
@@ -95,4 +109,11 @@ No XCTest; it is a plain executable that exits non-zero on failure. Add cases to
 - All user-visible text goes through `tr("key")` / `trf("key", args)` with entries for both languages.
 - Chinese UI text uses Taiwan wording (繁體中文、台灣用語). Every key needs all four languages; `tr()` falls back to English if one is missing.
 - Never log recognized text or translations with `dlog(...)`; use `dlogv(...)` so it stays out of the log unless verbose.
+- **Never put a `ScrollView` directly inside a `VStack`/`HStack`; wrap it in `FillLayout` (ContentView.swift).** A stack asks
+  each child for its ideal size, a `ScrollView` answers by measuring every row of its `LazyVStack`, and the enclosing stacks
+  repeat that query several times each, so the cost grows exponentially with nesting and linearly with line count. This
+  froze the main thread for good twice (2026-10-28 after 95 min, 2026-10-30 after 4 min; `sample` showed a 233-frame-deep
+  layout recursion). `FillLayout` reports 0 as its ideal size and hands its subview whatever space it is given.
+- Anything the user would lose on a crash (subtitles, recordings, transcripts) must be written incrementally while the
+  session runs, not only on Stop; macOS gives no chance to save when a hung app is force-quit.
 - After changes, run `./build.sh test`, then `./build.sh` and the test-mode check above.

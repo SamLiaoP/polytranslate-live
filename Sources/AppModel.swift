@@ -39,6 +39,9 @@ final class AppModel: ObservableObject {
     }()
     private var testFeedTask: Task<Void, Never>?
     private var recorder: SessionRecorder?
+    /// 進行中每隔這麼久存一次檢查點（歷史 JSON＋逐字稿）；當機時最多只少這幾秒的字幕。
+    static let checkpointInterval: Double = 30
+    private var checkpointTask: Task<Void, Never>?
     /// 開始時就決定這場的 id，錄音檔才能和之後存的 JSON 同名。
     private var sessionID = UUID()
     /// 引擎 slot → 字幕欄。沒有對應的 slot 是「吸收用」的目標語言通道，結果丟掉。
@@ -224,6 +227,7 @@ final class AppModel: ObservableObject {
         if settings.data.recordAudio { startRecording(captures: captures) }
         startedAt = Date()
         isRunning = true
+        startCheckpoints()
     }
 
     /// 錄音起不來不該讓整場翻譯跟著失敗：只顯示錯誤，session 照常進行。
@@ -248,6 +252,8 @@ final class AppModel: ObservableObject {
             waited += 1
         }
         guard isRunning else { return }
+        checkpointTask?.cancel()
+        checkpointTask = nil
         testFeedTask?.cancel()
         await engine.stop(hub: hub)      // 這裡會把最後一句定稿送進各欄
         let recorded = await recorder?.stop()
@@ -261,8 +267,6 @@ final class AppModel: ObservableObject {
         await withTaskGroup(of: Void.self) { group in
             for p in panes { group.addTask { @MainActor in await p.waitForTranslations(seconds: 3) } }
         }
-        let started = startedAt ?? Date()
-        startedAt = nil
         // 按錯馬上停、又沒有任何字幕的幾秒錄音不值得留。
         var recordingName: String?
         if let recorded {
@@ -272,16 +276,41 @@ final class AppModel: ObservableObject {
                 try? FileManager.default.removeItem(at: recorded.url)
             }
         }
-        let record = SessionRecord(
-            id: sessionID, startedAt: started, endedAt: Date(), source: settings.data.source, target: target,
+        let record = makeRecord(endedAt: Date(), recording: recordingName, interrupted: nil)
+        startedAt = nil
+        history.save(record)
+        if settings.data.saveTranscript, record.lineCount > 0 { saveTranscript(record) }
+    }
+
+    /// 進行中每 `checkpointInterval` 秒把目前字幕存成檢查點（歷史 JSON＋逐字稿）。
+    /// App 當機或被強制結束時，歷史紀錄最多只少最後 30 秒；錄音檔是分段寫的（見 SessionRecorder），也播得出來。
+    private func startCheckpoints() {
+        checkpointTask?.cancel()
+        checkpointTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(Self.checkpointInterval))
+                guard !Task.isCancelled, let self, self.isRunning else { return }
+                self.checkpoint()
+            }
+        }
+    }
+
+    private func checkpoint() {
+        let record = makeRecord(endedAt: Date(), recording: recorder?.url.lastPathComponent, interrupted: true)
+        guard record.lineCount > 0 || record.recording != nil else { return }
+        history.checkpoint(record)
+        if settings.data.saveTranscript, record.lineCount > 0 { saveTranscript(record, quiet: true) }
+    }
+
+    private func makeRecord(endedAt: Date, recording: String?, interrupted: Bool?) -> SessionRecord {
+        SessionRecord(
+            id: sessionID, startedAt: startedAt ?? Date(), endedAt: endedAt, source: settings.data.source, target: target,
             panes: panes.map { p in
                 SessionRecord.Pane(language: p.language, target: p.target,
                                    lines: p.lines.map { SessionRecord.Line(id: $0.id, time: $0.timestamp, original: $0.original,
                                                                             translated: $0.translated, source: $0.source) })
             },
-            recording: recordingName)
-        history.save(record)
-        if settings.data.saveTranscript, record.lineCount > 0 { saveTranscript(record) }
+            recording: recording, interrupted: interrupted)
     }
 
     func copyToPasteboard(_ record: SessionRecord) {
@@ -359,7 +388,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func saveTranscript(_ record: SessionRecord) {
+    /// 逐字稿檔名用開始時間，所以進行中的檢查點（`quiet`）每次都蓋同一個檔。
+    private func saveTranscript(_ record: SessionRecord, quiet: Bool = false) {
         let f = Self.fileNameFormatter
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent(tr("transcript.folder"), isDirectory: true)
@@ -367,7 +397,7 @@ final class AppModel: ObservableObject {
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             try HistoryStore.markdown(record).write(to: url, atomically: true, encoding: .utf8)
-            dlog("transcript saved: \(url.lastPathComponent)")
+            if !quiet { dlog("transcript saved: \(url.lastPathComponent)") }
         } catch {
             dlog("transcript save failed: \(error.localizedDescription)")
             globalError = trf("err.transcriptSave", error.localizedDescription)

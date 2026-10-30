@@ -23,6 +23,9 @@ struct SessionRecord: Identifiable, Codable, Equatable {
     var panes: [Pane]
     /// 同資料夾裡的錄音檔名（.m4a）；沒開錄音或舊紀錄就是 nil。
     var recording: String? = nil
+    /// true = 這是 session 進行中每 30 秒存的檢查點。App 正常停止會蓋成 nil；
+    /// 還留著 true 就表示那場沒有正常結束（當機、被強制結束、斷電），內容只到 `endedAt`。
+    var interrupted: Bool? = nil
 
     var duration: TimeInterval { endedAt.timeIntervalSince(startedAt) }
     var lineCount: Int { panes.reduce(0) { $0 + $1.lines.count } }
@@ -128,7 +131,11 @@ final class HistoryStore: ObservableObject {
     }
 
     func save(_ record: SessionRecord) {
-        guard record.lineCount > 0 || record.recording != nil else { return }
+        guard record.lineCount > 0 || record.recording != nil else {
+            // 按錯馬上停的空場次：進行中存的檢查點也不留。
+            try? FileManager.default.removeItem(at: url(for: record.id))
+            return
+        }
         do {
             try encoder.encode(record).write(to: url(for: record.id), options: .atomic)
             if isLoading { changedDuringLoad.insert(record.id) }
@@ -137,6 +144,17 @@ final class HistoryStore: ObservableObject {
             dlog("history saved: \(record.id) (\(record.lineCount) lines)")
         } catch {
             dlog("history save failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// session 進行中的檢查點：只寫檔、不動 `sessions`（側欄不列進行中的場次），停止時 `save` 會蓋掉同一個檔。
+    /// 寫檔失敗只記 log，不打擾正在開會的人。
+    func checkpoint(_ record: SessionRecord) {
+        do {
+            try encoder.encode(record).write(to: url(for: record.id), options: .atomic)
+            dlogv("history checkpoint: \(record.id) (\(record.lineCount) lines)")
+        } catch {
+            dlog("history checkpoint failed: \(error.localizedDescription)")
         }
     }
 

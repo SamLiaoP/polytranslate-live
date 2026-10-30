@@ -221,6 +221,8 @@ enum L10n {
         "history.back": ["Back to live", "回到即時字幕", "ライブに戻る", "실시간으로 돌아가기"],
         "history.live": ["Live", "即時", "ライブ", "실시간"],
         "history.viewing": ["Viewing a past recording", "正在查看過去的紀錄", "過去の記録を表示中", "지난 기록 보는 중"],
+        "history.interrupted.short": ["Did not stop normally", "沒有正常停止", "正常に停止されませんでした", "정상 정지되지 않음"],
+        "history.interrupted": ["This session did not stop normally (the app quit unexpectedly). Content is kept up to %@.", "這場沒有正常停止（程式異常結束），內容保留到 %@。", "このセッションは正常に停止されませんでした（アプリが異常終了）。%@ までの内容を保存しています。", "이 세션은 정상적으로 정지되지 않았습니다(앱 비정상 종료). %@까지의 내용이 저장되어 있습니다."],
         // 語言名稱（介面語言的說法）
         "lang.zh-Hant": ["Traditional Chinese", "繁體中文", "繁体字中国語", "중국어(번체)"],
         "lang.zh-Hans": ["Simplified Chinese", "簡體中文", "簡体字中国語", "중국어(간체)"],

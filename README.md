@@ -36,10 +36,10 @@
 - **Automatic routing by language.** Every pane's language is recognized in parallel on the same audio; when a sentence is finalized, the recognizer with the highest confidence wins and the sentence appears in that pane. The target language itself runs as a silent lane so that, say, Chinese speech never shows up as garbage in the English pane.
 - **Live drafts.** While someone is still talking you see a gray draft and a draft translation; it turns solid when the sentence ends.
 - **Mixed input without mixing audio.** System audio and microphone each get their own recognizers; lines are tagged with a speaker or mic icon. When both hear the same sentence (headphone leakage, headset crosstalk, speakers picked up by the mic), only the first copy is kept.
-- **History sidebar.** Every session is saved when you press Stop; browse, copy as text, or delete from the collapsible sidebar. Optionally also save a Markdown transcript to Documents › PolyTranslate Live (off by default; enable in Settings).
+- **History sidebar.** Every session is saved when you press Stop, and checkpointed every 30 seconds while it runs, so a crash or force quit loses at most the last half minute (such sessions are marked with a warning icon). Browse, copy as text, or delete from the collapsible sidebar. Optionally also save a Markdown transcript to Documents › PolyTranslate Live (off by default; enable in Settings).
 - **Interface in English, Traditional Chinese, Japanese or Korean.** Language names show as *native name (name in your UI language)*, e.g. `日本語 (Japanese)`.
 - **Vocabulary and wording.** Settings › Recognition takes a list of names and jargon the recognizer should prefer (fed to SpeechAnalyzer as contextual strings). Settings › Chinese wording converts Traditional Chinese translations to Taiwan terms (built-in OpenCC table plus your own rules). By default only the languages of your panes are recognized; turn on “Someone will speak the target language” to add a recognizer that drops sentences spoken in the target language.
-- **Full audio recording.** Every session is also recorded (AAC, 16 kHz mono, about 15 MB per hour) and kept with its history entry. Open a past session and press **Save recording…** to export the .m4a. Turn it off in Settings › Recording.
+- **Full audio recording.** Every session is also recorded (AAC, 16 kHz mono, about 15 MB per hour, written in 10-second fragments so the file stays playable even if the app is killed) and kept with its history entry. Open a past session and press **Save recording…** to export the .m4a. Turn it off in Settings › Recording.
 
 ### Speed (measured on Apple Silicon)
 
@@ -186,10 +186,10 @@ Written from scratch in Swift. Ideas and API usage patterns were learned from th
 - **依語言自動分流。** 所有欄位的語言同時辨識同一段聲音，每句話定稿時由信心值最高的辨識器勝出，出現在對應的欄位。目標語言本身也有一條隱藏的通道，所以有人說中文時不會變成英文欄的亂碼。
 - **即時草稿。** 對方還在講時先看到灰色草稿和草稿翻譯，說完一句就定稿。
 - **混合輸入不混音。** 系統聲音和麥克風各有自己的辨識器，字幕前標記喇叭或麥克風圖示。兩邊聽到同一句（耳機漏音、耳麥串音、麥克風收到喇叭聲）時只留先到的那條。
-- **歷史紀錄側欄。** 每次按停止就存一筆，左側可收納的列表能回看、複製成文字、刪除。也可以在設定裡打開「停止時存逐字稿」，另存一份 Markdown 到「文件 › PolyTranslate Live」（預設關閉）。
+- **歷史紀錄側欄。** 每次按停止就存一筆，進行中也每 30 秒存一次檢查點，就算當機或被強制結束，最多只少最後半分鐘（這種場次會標一個警告圖示）。左側可收納的列表能回看、複製成文字、刪除。也可以在設定裡打開「停止時存逐字稿」，另存一份 Markdown 到「文件 › PolyTranslate Live」（預設關閉）。
 - **介面可選英文、繁體中文、日文、韓文。** 語言名稱顯示成「原生名稱（介面語言的翻譯）」，例如 `English（英文）`、`日本語（日文）`。
 - **詞彙表與用語。** 「設定 › 辨識」可以填人名、專有名詞讓辨識器偏向這些拼法（餵給 SpeechAnalyzer 的 contextual strings）。「設定 › 中文用語」會把繁體中文譯文換成台灣用語（內建 OpenCC 對照表，可加自訂規則）。預設只辨識各欄選的語言；有人會講目標語言時再打開「有人會講目標語言」，多開一條辨識把那些句子略過。
-- **完整錄音。** 每場翻譯同時錄成 AAC（16 kHz 單聲道，每小時約 15 MB），和歷史紀錄放在一起。打開過去的紀錄按「儲存錄音…」就能匯出 .m4a；不想錄可以在「設定 › 錄音」關掉。
+- **完整錄音。** 每場翻譯同時錄成 AAC（16 kHz 單聲道，每小時約 15 MB，每 10 秒寫一個分段，App 被強制結束檔案也照樣能播），和歷史紀錄放在一起。打開過去的紀錄按「儲存錄音…」就能匯出 .m4a；不想錄可以在「設定 › 錄音」關掉。
 
 ![設定](docs/screenshots/settings-zh.png)
 

@@ -58,6 +58,29 @@ struct Layout: Equatable {
 }
 
 private struct LayoutKey: EnvironmentKey { static let defaultValue = Layout() }
+
+/// 把拿到的空間原封不動交給子視圖；被問「理想大小」時答 0，不去量內容。
+/// ScrollView 直接放在 VStack／HStack 裡時，Stack 會先問它的理想高度，ScrollView 只能把 LazyVStack 裡
+/// 每一行字幕都量過才答得出來；外面再包幾層 Stack、各問好幾次，就變成指數級，字幕一多主執行緒就卡死
+/// （2026-10-28 與 10-30 兩次「當機」都是這個，見 AGENTS.md）。所以字幕捲動區一律包在這裡面。
+struct FillLayout: SwiftUI.Layout {   // 這個檔案裡的 `Layout` 是上面的版面參數，所以要寫全名
+    func sizeThatFits(proposal: ProposedViewSize, subviews: LayoutSubviews, cache: inout ()) -> CGSize {
+        CGSize(width: proposal.width ?? 0, height: proposal.height ?? 0)
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: LayoutSubviews, cache: inout ()) {
+        for s in subviews {
+            s.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(bounds.size))
+        }
+    }
+}
+
+/// 文字可選取在 macOS 上每一行都多一層排版成本，即時字幕只在停止後才開；歷史頁一直開。
+private struct SelectableText: ViewModifier {
+    let enabled: Bool
+    @ViewBuilder func body(content: Content) -> some View {
+        if enabled { content.textSelection(.enabled) } else { content.textSelection(.disabled) }
+    }
+}
 extension EnvironmentValues {
     var layout: Layout {
         get { self[LayoutKey.self] }
@@ -185,7 +208,14 @@ private struct HistorySidebar: View {
                         ForEach(history.sessions) { s in
                             SidebarRow(selected: model.selectedSession?.id == s.id, action: { model.selectedSession = s }) {
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text(s.title).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                                    HStack(spacing: 5) {
+                                        Text(s.title).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                                        if s.interrupted == true {
+                                            Image(systemName: "exclamationmark.triangle.fill")
+                                                .font(.system(size: 10)).foregroundStyle(.orange)
+                                                .help(tr("history.interrupted.short"))
+                                        }
+                                    }
                                     HStack(spacing: 6) {
                                         Text(s.panes.map(\.language.name).joined(separator: "・"))
                                         Text("·")
@@ -299,6 +329,11 @@ private struct HistoryDetail: View {
             }
             .padding(.horizontal, layout.outerPad + 4)
             .padding(.bottom, layout.outerPad / 2)
+            if record.interrupted == true {
+                Banner(text: trf("history.interrupted", SessionRecord.timeFormatter.string(from: record.endedAt)), kind: .info)
+                    .padding(.horizontal, layout.outerPad)
+                    .padding(.bottom, layout.outerPad / 2)
+            }
 
             let vertical = layout.isMini || (layout.size.width - layout.outerPad * 2) / CGFloat(max(1, record.panes.count)) < 300
             let stack = vertical ? AnyLayout(VStackLayout(spacing: layout.paneGap)) : AnyLayout(HStackLayout(spacing: layout.paneGap))
@@ -316,20 +351,22 @@ private struct HistoryDetail: View {
                         }
                         .padding(.horizontal, layout.panePadH).padding(.top, layout.panePadV).padding(.bottom, layout.panePadV - 2)
                         Rectangle().fill(Palette.cardStroke).frame(height: 1).padding(.horizontal, layout.panePadH)
-                        ScrollView {
-                            LazyVStack(alignment: .leading, spacing: layout.lineGap) {
-                                ForEach(Array(p.lines.enumerated()), id: \.element.id) { i, l in
-                                    if i == 0 || Timeline.bucket(l.time) != Timeline.bucket(p.lines[i - 1].time) {
-                                        TimeMarker(date: l.time)
+                        FillLayout {
+                            ScrollView {
+                                LazyVStack(alignment: .leading, spacing: layout.lineGap) {
+                                    ForEach(Array(p.lines.enumerated()), id: \.element.id) { i, l in
+                                        if i == 0 || Timeline.bucket(l.time) != Timeline.bucket(p.lines[i - 1].time) {
+                                            TimeMarker(date: l.time)
+                                        }
+                                        LineView(line: SubtitleLine(id: l.id, original: l.original, translated: l.translated,
+                                                                    source: l.source, timestamp: l.time),
+                                                 fontSize: fontSize, showSource: record.source == .mixed,
+                                                 showTranslation: p.language.translation != p.target.translation, isHistory: true)
                                     }
-                                    LineView(line: SubtitleLine(id: l.id, original: l.original, translated: l.translated,
-                                                                source: l.source, timestamp: l.time),
-                                             fontSize: fontSize, showSource: record.source == .mixed,
-                                             showTranslation: p.language.translation != p.target.translation, isHistory: true)
                                 }
+                                .padding(.horizontal, layout.panePadH).padding(.vertical, layout.panePadV)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             }
-                            .padding(.horizontal, layout.panePadH).padding(.vertical, layout.panePadV)
-                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
                     .background(
@@ -378,6 +415,8 @@ private struct TopBar: View {
                         Text(elapsed(at: ctx.date))
                             .font(.system(size: layout.timerFont, weight: .medium, design: .rounded))
                             .monospacedDigit()
+                            .lineLimit(1)
+                            .fixedSize()   // 四分之一螢幕時中間只分到三分之一寬，不固定會被折成兩行
                     }
                     if model.isRecording {
                         HStack(spacing: 4) {
@@ -397,10 +436,13 @@ private struct TopBar: View {
                     Text("00:00:00")
                         .font(.system(size: layout.timerFont, weight: .medium, design: .rounded))
                         .monospacedDigit()
+                        .lineLimit(1)
+                        .fixedSize()
                         .foregroundStyle(.secondary)
                 }
             }
             .frame(maxWidth: .infinity)
+            .layoutPriority(1)   // 中間的開始鈕＋計時先拿夠寬度，左右兩組再分剩下的
 
             // 右：縮小時控制列收進這個選單；設定
             HStack(spacing: layout.isMini ? 6 : 10) {
@@ -667,7 +709,7 @@ private struct PaneView: View {
             if let m = downloadMessage {
                 Text(m).font(.caption).foregroundStyle(.secondary).padding(.horizontal, layout.panePadH + 2).padding(.top, 6)
             }
-            transcript
+            FillLayout { transcript }
         }
         .background(
             RoundedRectangle(cornerRadius: layout.cardRadius)
@@ -773,7 +815,7 @@ private struct PaneView: View {
                             TimeMarker(date: line.timestamp)
                         }
                         LineView(line: line, fontSize: fontSize, showSource: settings.data.source == .mixed,
-                                 showTranslation: !pane.sameLanguage)
+                                 showTranslation: !pane.sameLanguage, selectable: !pane.isRunning)
                     }
                     ForEach(pane.orderedDrafts, id: \.source) { d in
                         DraftView(original: d.text, translation: d.translation, fontSize: fontSize,
@@ -945,6 +987,7 @@ private struct LineView: View {
     var showSource = false
     var showTranslation = true
     var isHistory = false
+    var selectable = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -974,7 +1017,7 @@ private struct LineView: View {
                 }
             }
         }
-        .textSelection(.enabled)
+        .modifier(SelectableText(enabled: selectable))
         .frame(maxWidth: .infinity, alignment: .leading)
         .animation(.easeOut(duration: 0.2), value: line.translated)
     }

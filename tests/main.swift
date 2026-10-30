@@ -273,6 +273,115 @@ MainActor.assumeIsolated {
     checkEqual(reloaded.sessions.last?.preview, "updated text", "history updated text persisted")
 }
 
+// ---- HistoryStore：檢查點只寫檔、不進側欄；interrupted 欄位可來回；空場次的 save 會清掉檢查點 ----
+MainActor.assumeIsolated {
+    func pump(until done: () -> Bool) {
+        let deadline = Date().addingTimeInterval(5)
+        while !done(), Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        check(done(), "history checkpoint async work completed")
+    }
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("history-ckpt-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = HistoryStore(directory: dir)
+    var loaded = false
+    let initial = store.load()
+    Task { @MainActor in await initial.value; loaded = true }
+    pump { loaded }
+
+    let date = Date(timeIntervalSince1970: 1_000)
+    var rec = SessionRecord(id: UUID(), startedAt: date, endedAt: date.addingTimeInterval(30), source: .mixed, target: zh,
+                            panes: [.init(language: en, target: zh,
+                                          lines: [.init(id: 0, time: date, original: "hello", translated: "哈囉", source: .system)])],
+                            recording: "x.m4a", interrupted: true)
+    store.checkpoint(rec)
+    let file = dir.appendingPathComponent("\(rec.id.uuidString).json")
+    check(FileManager.default.fileExists(atPath: file.path), "checkpoint 寫了 JSON")
+    check(!store.sessions.contains { $0.id == rec.id }, "checkpoint 不出現在 sessions")
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let back = try? decoder.decode(SessionRecord.self, from: Data(contentsOf: file))
+    checkEqual(back?.interrupted, true, "checkpoint 標記 interrupted")
+    checkEqual(back?.recording, "x.m4a", "checkpoint 帶錄音檔名")
+
+    // 正常停止：interrupted 回到 nil，JSON 裡不會有這個欄位（和舊版紀錄格式一樣）。
+    rec.interrupted = nil
+    store.save(rec)
+    let json = String(data: (try? Data(contentsOf: file)) ?? Data(), encoding: .utf8) ?? ""
+    check(!json.contains("interrupted"), "正常停止的紀錄沒有 interrupted 欄位")
+    checkEqual((try? decoder.decode(SessionRecord.self, from: Data(contentsOf: file)))?.interrupted, nil, "沒有欄位 → 讀回 nil")
+    check(store.sessions.contains { $0.id == rec.id }, "save 之後進 sessions")
+
+    // 按錯馬上停、什麼都沒有的場次：save 會把先前的檢查點檔清掉。
+    var empty = rec
+    empty.id = UUID()
+    empty.interrupted = true
+    store.checkpoint(empty)
+    let emptyFile = dir.appendingPathComponent("\(empty.id.uuidString).json")
+    check(FileManager.default.fileExists(atPath: emptyFile.path), "空場次先有檢查點")
+    empty.panes[0].lines = []
+    empty.recording = nil
+    empty.interrupted = nil
+    store.save(empty)
+    check(!FileManager.default.fileExists(atPath: emptyFile.path), "空場次的 save 清掉檢查點檔")
+}
+
+// ---- SessionRecorder：分段寫檔，沒正常停止的檔也播得出來 ----
+do {
+    func awaitValue<T>(_ op: @escaping @Sendable () async -> T) -> T {
+        let sem = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var result: T?
+        Task { result = await op(); sem.signal() }
+        sem.wait()
+        return result!
+    }
+    let hub = AudioHub()
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("recorder-test-\(UUID())", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let url = dir.appendingPathComponent("rec.m4a")
+    let rec = SessionRecorder(url: url, fragmentSeconds: 1)
+    var started = false
+    do {
+        try rec.start(hub: hub, kinds: [.system, .microphone])
+        started = true
+    } catch {
+        print("  recorder start error: \(error.localizedDescription)")
+    }
+    check(started, "recorder started with fragmented writer")
+    if started {
+        // 以真實時間灌 3.5 秒的 440 Hz 正弦波（錄音器每 250 ms 取一次，佇列最多 2 秒）。
+        let chunk = Int(SessionRecorder.sampleRate / 4)
+        var phase = 0.0
+        for _ in 0..<14 {
+            var s = [Float](repeating: 0, count: chunk)
+            for i in 0..<chunk {
+                s[i] = Float(sin(phase)) * 0.3
+                phase += 2 * .pi * 440 / SessionRecorder.sampleRate
+            }
+            hub.inject(.system, s)
+            hub.inject(.microphone, s)
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        Thread.sleep(forTimeInterval: 0.8)
+        // 還沒 stop 就先讀：這就是被強制結束後留在磁碟上的樣子。
+        let partial = awaitValue { () -> Double in
+            let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
+            return (try? await asset.load(.duration).seconds) ?? -1
+        }
+        check(partial >= 1.5, "未收尾的錄音檔已能讀出 ≥ 1.5 秒（實際 \(partial)）")
+        let stopped = awaitValue { await rec.stop() }
+        check(stopped.seconds >= 3.0 && stopped.seconds <= 4.5, "停止回報長度 3–4.5 秒（實際 \(stopped.seconds)）")
+        if let f = try? AVAudioFile(forReading: url) {
+            let secs = Double(f.length) / f.fileFormat.sampleRate
+            check(secs >= 3.0 && secs <= 4.6, "AVAudioFile 讀得出收尾後的檔（\(secs) 秒）")
+        } else {
+            check(false, "AVAudioFile 打不開收尾後的錄音檔")
+        }
+    }
+}
+
 // ---- Timeline：5 分鐘一格 ----
 do {
     let cal = Calendar.current
